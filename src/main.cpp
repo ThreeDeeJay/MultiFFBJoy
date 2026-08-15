@@ -25,11 +25,8 @@ namespace
     // 65458 == 0xFFB2 == "FFB2"
     constexpr int UDP_PORT = 65458;
 
-    // Safety timeout. If the sender disappears, all force is stopped.
     constexpr DWORD COMMAND_TIMEOUT_MS = 250;
-
     constexpr DWORD SOCKET_TIMEOUT_MS = 25;
-
 
     HWND g_mainWindow = nullptr;
     HWND g_statusWindow = nullptr;
@@ -93,7 +90,6 @@ namespace
         DWORD springEffType = 0;
         DWORD springStaticParams = 0;
         DWORD springDynamicParams = 0;
-        DWORD springCoords = 0;
     };
 
     std::vector<DeviceCandidate> g_candidates;
@@ -270,11 +266,6 @@ namespace
 
     // -------------------------------------------------------------------------
     // FFB effect enumeration
-    //
-    // We specifically look for GUID_Spring.
-    //
-    // This prevents us from selecting a virtual device merely because it
-    // advertises DIDC_FORCEFEEDBACK.
     // -------------------------------------------------------------------------
 
     struct EffectEnumerationContext
@@ -284,7 +275,6 @@ namespace
         DWORD springEffType = 0;
         DWORD springStaticParams = 0;
         DWORD springDynamicParams = 0;
-        DWORD springCoords = 0;
     };
 
 
@@ -316,9 +306,6 @@ namespace
 
             context->springDynamicParams =
                 effectInfo->dwDynamicParams;
-
-            context->springCoords =
-                effectInfo->dwCoordSystem;
 
             return DIENUM_STOP;
         }
@@ -421,9 +408,6 @@ namespace
             candidate.hasYAxis =
                 axes.hasYAxis;
 
-            //
-            // Only query effects on devices advertising FFB.
-            //
             if (candidate.forceFeedback)
             {
                 EffectEnumerationContext effects;
@@ -443,9 +427,6 @@ namespace
 
                     candidate.springDynamicParams =
                         effects.springDynamicParams;
-
-                    candidate.springCoords =
-                        effects.springCoords;
                 }
             }
 
@@ -551,12 +532,6 @@ namespace
 
         if (FAILED(hr))
         {
-            //
-            // Some drivers/devices reject this property even though they
-            // support software-created FFB effects.
-            //
-            // Do NOT reject the device because of this.
-            //
             Logf(
                 "Warning: could not disable hardware "
                 "auto-center: 0x%08lX",
@@ -572,13 +547,6 @@ namespace
 
     // -------------------------------------------------------------------------
     // Create spring effect
-    //
-    // Important DirectInput detail:
-    //
-    // Because we provide TWO DICONDITION structures -- one for X and one for
-    // Y -- the effect acts independently on each axis.
-    //
-    // That gives us exactly the basic joystick autocenter behavior we need.
     // -------------------------------------------------------------------------
 
     bool CreateSpringEffect()
@@ -592,10 +560,6 @@ namespace
             DIJOFS_Y
         };
 
-        //
-        // For a per-axis condition effect, direction is not used to rotate
-        // the condition. Keep the values at zero.
-        //
         LONG directions[2] =
         {
             0,
@@ -658,12 +622,6 @@ namespace
         effect.lpvTypeSpecificParams =
             conditions;
 
-        //
-        // Use the standard GUID_Spring.
-        //
-        // Microsoft documents GUID_Spring as the standard DirectInput
-        // condition effect.
-        //
         const HRESULT hr =
             g_ffbDevice->CreateEffect(
                 GUID_Spring,
@@ -692,7 +650,7 @@ namespace
 
 
     // -------------------------------------------------------------------------
-    // Select suitable physical FFB device
+    // Select suitable FFB device
     // -------------------------------------------------------------------------
 
     bool SelectFirstSuitableDevice()
@@ -741,17 +699,6 @@ namespace
                 candidate.springSupported ? "yes" : "no");
         }
 
-        //
-        // We deliberately do NOT select a device merely because it advertises
-        // DIDC_FORCEFEEDBACK.
-        //
-        // It must:
-        //
-        //   * have at least two axes
-        //   * have X and Y
-        //   * advertise FFB
-        //   * actually enumerate GUID_Spring
-        //
         for (const auto& candidate :
              g_candidates)
         {
@@ -1003,11 +950,6 @@ namespace
         effect.lpvTypeSpecificParams =
             conditions;
 
-        //
-        // The SideWinder should accept dynamic type-specific condition
-        // parameters. If a driver does not, it can return
-        // DIERR_EFFECTPLAYING. In that case we'll stop and restart it.
-        //
         HRESULT hr =
             g_springEffect->SetParameters(
                 &effect,
@@ -1173,9 +1115,6 @@ namespace
                 }
             }
 
-            //
-            // Safety watchdog.
-            //
             bool timedOut = false;
 
             {
@@ -1265,24 +1204,10 @@ namespace
                 static_cast<u_short>(
                     UDP_PORT));
 
-        if (inet_pton(
-                AF_INET,
-                "127.0.0.1",
-                &address.sin_addr) != 1)
-        {
-            Log(
-                "inet_pton() failed.");
-
-            closesocket(
-                g_socket);
-
-            g_socket =
-                INVALID_SOCKET;
-
-            WSACleanup();
-
-            return false;
-        }
+        inet_pton(
+            AF_INET,
+            "127.0.0.1",
+            &address.sin_addr);
 
         if (bind(
                 g_socket,
@@ -1573,9 +1498,6 @@ int APIENTRY wWinMain(
     Log(
         "MultiFFBJoy starting.");
 
-    //
-    // DirectInput initialization.
-    //
     HRESULT hr =
         DirectInput8Create(
             instance,
@@ -1597,18 +1519,12 @@ int APIENTRY wWinMain(
         SelectFirstSuitableDevice();
     }
 
-    //
-    // UDP.
-    //
     if (!StartUdpServer())
     {
         Log(
             "UDP server could not be started.");
     }
 
-    //
-    // Message loop.
-    //
     MSG winMessage{};
 
     while (GetMessageW(
@@ -1624,9 +1540,6 @@ int APIENTRY wWinMain(
             &winMessage);
     }
 
-    //
-    // Shutdown.
-    //
     StopUdpServer();
 
     StopSpring();
