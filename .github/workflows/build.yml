@@ -4,8 +4,8 @@ name: Build
 env:
   GH_TOKEN: "${{github.token}}"
   Branch: "${{github.ref_name}}"
-  Artifacts: "build/Release"
-  Extension: "*" # "*.exe" # "*.dll"
+  Artifacts: "bin\x64\Release"
+  Extension: "*.exe"
   Title: "${{github.event.repository.name}}"
   Solution: "${{github.event.repository.name}}.sln" # .
   Executable: "${{github.event.repository.name}}.exe" # *
@@ -23,15 +23,8 @@ jobs:
     runs-on: windows-2022
     strategy:
       matrix:
-        Configuration: [Release] #[Release, Debug]
+        Configuration: [Release]
         Settings:
-#        - {
-#            Name: "Win32",
-#            Platform: "Win32",
-#            Architecture: "x86",
-#            Bits: "32",
-#            Triplet: "x86-windows"
-#          }
         - {
             Name: "Win64",
             Platform: "x64",
@@ -69,14 +62,6 @@ jobs:
     - name: List files
       run: Get-ChildItem -Path "." -File -Recurse | Select-Object FullName
 
-#    - name: Deploy
-#      shell: cmd
-#      run: |
-#        windeployqt.exe "${{github.workspace}}/${{env.Artifacts}}/${{env.Executable}}"
-#        If exist "C:\vcpkg\installed\${{matrix.Settings.Triplet}}\bin\*.dll"          (move "C:\vcpkg\installed\${{matrix.Settings.Triplet}}\bin\*.dll"        "${{env.Artifacts}}")
-#        If exist "C:\vcpkg\installed\${{matrix.Settings.Triplet}}\debug\bin\*.dll"    (move "C:\vcpkg\installed\${{matrix.Settings.Triplet}}\debug\bin\*.dll"  "${{env.Artifacts}}")
-#        move "assets" "${{env.Artifacts}}"
-
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -105,12 +90,6 @@ jobs:
           echo "CommitHashShort=$(git rev-parse --short=7 HEAD)" >> $env:GITHUB_ENV
           echo "CommitCount=$(git rev-list --count HEAD)" >> $env:GITHUB_ENV
           echo "CommitDate=$(git show -s --date=format:'%Y-%m-%d' --format=%cd)" >> $env:GITHUB_ENV
-
-#      - name: Download Artifacts - Win32
-#        uses: actions/download-artifact@v4
-#        with:
-#          name: ${{env.Title}}-Win32-Release
-#          path: Release/Win32/
 
       - name: Download Artifacts - Win64
         uses: actions/download-artifact@v4
