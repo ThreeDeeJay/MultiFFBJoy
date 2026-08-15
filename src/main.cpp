@@ -8,8 +8,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdarg>
-#include <cstdio>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -24,48 +22,34 @@ namespace
 {
     constexpr UINT WM_APP_LOG = WM_APP + 1;
 
-    constexpr int UDP_PORT = 47777;
+    // 65458 == 0xFFB2 == "FFB2"
+    constexpr int UDP_PORT = 65458;
 
-    // If no FFB command arrives within this period, the helper
-    // automatically stops all effects.
+    // Safety timeout. If the sender disappears, all force is stopped.
     constexpr DWORD COMMAND_TIMEOUT_MS = 250;
 
     constexpr DWORD SOCKET_TIMEOUT_MS = 25;
 
 
-    // -------------------------------------------------------------------------
-    // GUI
-    // -------------------------------------------------------------------------
-
     HWND g_mainWindow = nullptr;
     HWND g_statusWindow = nullptr;
     HWND g_logWindow = nullptr;
 
-
-    // -------------------------------------------------------------------------
-    // DirectInput
-    // -------------------------------------------------------------------------
-
     IDirectInput8W* g_directInput = nullptr;
     IDirectInputDevice8W* g_ffbDevice = nullptr;
     IDirectInputEffect* g_springEffect = nullptr;
-
-
-    // -------------------------------------------------------------------------
-    // UDP
-    // -------------------------------------------------------------------------
 
     SOCKET g_socket = INVALID_SOCKET;
 
     std::thread g_networkThread;
     std::atomic<bool> g_running{ false };
 
-
-    // -------------------------------------------------------------------------
-    // Shared state
-    // -------------------------------------------------------------------------
-
     std::mutex g_stateMutex;
+
+
+    // -------------------------------------------------------------------------
+    // Device state
+    // -------------------------------------------------------------------------
 
     struct DeviceState
     {
@@ -75,6 +59,7 @@ namespace
 
         bool forceFeedback = false;
         bool acquired = false;
+        bool springSupported = false;
 
         DWORD xAxisOffset = DIJOFS_X;
         DWORD yAxisOffset = DIJOFS_Y;
@@ -89,7 +74,7 @@ namespace
 
 
     // -------------------------------------------------------------------------
-    // Candidate device
+    // Device candidate
     // -------------------------------------------------------------------------
 
     struct DeviceCandidate
@@ -103,6 +88,12 @@ namespace
         bool forceFeedback = false;
         bool hasXAxis = false;
         bool hasYAxis = false;
+        bool springSupported = false;
+
+        DWORD springEffType = 0;
+        DWORD springStaticParams = 0;
+        DWORD springDynamicParams = 0;
+        DWORD springCoords = 0;
     };
 
     std::vector<DeviceCandidate> g_candidates;
@@ -145,26 +136,11 @@ namespace
     }
 
 
-    void Log(const char* format, ...)
+    void Log(const std::string& text)
     {
-        char buffer[2048]{};
-
-        va_list arguments;
-
-        va_start(arguments, format);
-
-        vsnprintf_s(
-            buffer,
-            sizeof(buffer),
-            _TRUNCATE,
-            format,
-            arguments);
-
-        va_end(arguments);
-
         auto* message =
             new std::wstring(
-                Utf8ToWide(buffer));
+                Utf8ToWide(text.c_str()));
 
         if (g_mainWindow != nullptr)
         {
@@ -172,7 +148,8 @@ namespace
                 g_mainWindow,
                 WM_APP_LOG,
                 0,
-                reinterpret_cast<LPARAM>(message));
+                reinterpret_cast<LPARAM>(
+                    message));
         }
         else
         {
@@ -181,8 +158,25 @@ namespace
     }
 
 
+    template <typename... Args>
+    void Logf(
+        const char* format,
+        Args... args)
+    {
+        char buffer[2048]{};
+
+        sprintf_s(
+            buffer,
+            sizeof(buffer),
+            format,
+            args...);
+
+        Log(buffer);
+    }
+
+
     // -------------------------------------------------------------------------
-    // Status display
+    // Status
     // -------------------------------------------------------------------------
 
     void UpdateStatus()
@@ -193,7 +187,9 @@ namespace
         DeviceState state;
 
         {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
+
             state = g_state;
         }
 
@@ -204,6 +200,7 @@ namespace
             L"Selected device: %ls\r\n"
             L"Axes: %lu\r\n"
             L"Force Feedback: %s\r\n"
+            L"Spring effect: %s\r\n"
             L"Acquired: %s\r\n"
             L"Logical X axis: 0x%lX\r\n"
             L"Logical Y axis: 0x%lX\r\n"
@@ -213,9 +210,12 @@ namespace
             state.name.c_str(),
             state.axisCount,
             state.forceFeedback ? L"Yes" : L"No",
+            state.springSupported ? L"Yes" : L"No",
             state.acquired ? L"Yes" : L"No",
-            static_cast<unsigned long>(state.xAxisOffset),
-            static_cast<unsigned long>(state.yAxisOffset),
+            static_cast<unsigned long>(
+                state.xAxisOffset),
+            static_cast<unsigned long>(
+                state.yAxisOffset),
             state.springStrength,
             UDP_PORT,
             COMMAND_TIMEOUT_MS);
@@ -269,6 +269,91 @@ namespace
 
 
     // -------------------------------------------------------------------------
+    // FFB effect enumeration
+    //
+    // We specifically look for GUID_Spring.
+    //
+    // This prevents us from selecting a virtual device merely because it
+    // advertises DIDC_FORCEFEEDBACK.
+    // -------------------------------------------------------------------------
+
+    struct EffectEnumerationContext
+    {
+        bool springSupported = false;
+
+        DWORD springEffType = 0;
+        DWORD springStaticParams = 0;
+        DWORD springDynamicParams = 0;
+        DWORD springCoords = 0;
+    };
+
+
+    BOOL CALLBACK EnumerateEffectsCallback(
+        const DIEFFECTINFO* effectInfo,
+        VOID* contextPointer)
+    {
+        if (effectInfo == nullptr ||
+            contextPointer == nullptr)
+        {
+            return DIENUM_CONTINUE;
+        }
+
+        auto* context =
+            static_cast<EffectEnumerationContext*>(
+                contextPointer);
+
+        if (IsEqualGUID(
+                effectInfo->guid,
+                GUID_Spring))
+        {
+            context->springSupported = true;
+
+            context->springEffType =
+                effectInfo->dwEffType;
+
+            context->springStaticParams =
+                effectInfo->dwStaticParams;
+
+            context->springDynamicParams =
+                effectInfo->dwDynamicParams;
+
+            context->springCoords =
+                effectInfo->dwCoordSystem;
+
+            return DIENUM_STOP;
+        }
+
+        return DIENUM_CONTINUE;
+    }
+
+
+    bool QuerySpringSupport(
+        IDirectInputDevice8W* device,
+        EffectEnumerationContext& result)
+    {
+        result = EffectEnumerationContext{};
+
+        const HRESULT hr =
+            device->EnumEffects(
+                EnumerateEffectsCallback,
+                &result,
+                DIEFT_CONDITION);
+
+        if (FAILED(hr))
+        {
+            Logf(
+                "EnumEffects(DIEFT_CONDITION) failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+
+            return false;
+        }
+
+        return result.springSupported;
+    }
+
+
+    // -------------------------------------------------------------------------
     // Device enumeration
     // -------------------------------------------------------------------------
 
@@ -282,7 +367,8 @@ namespace
             return DIENUM_STOP;
         }
 
-        IDirectInputDevice8W* device = nullptr;
+        IDirectInputDevice8W* device =
+            nullptr;
 
         HRESULT hr =
             g_directInput->CreateDevice(
@@ -335,6 +421,34 @@ namespace
             candidate.hasYAxis =
                 axes.hasYAxis;
 
+            //
+            // Only query effects on devices advertising FFB.
+            //
+            if (candidate.forceFeedback)
+            {
+                EffectEnumerationContext effects;
+
+                if (QuerySpringSupport(
+                        device,
+                        effects))
+                {
+                    candidate.springSupported =
+                        true;
+
+                    candidate.springEffType =
+                        effects.springEffType;
+
+                    candidate.springStaticParams =
+                        effects.springStaticParams;
+
+                    candidate.springDynamicParams =
+                        effects.springDynamicParams;
+
+                    candidate.springCoords =
+                        effects.springCoords;
+                }
+            }
+
             g_candidates.push_back(
                 candidate);
         }
@@ -346,7 +460,7 @@ namespace
 
 
     // -------------------------------------------------------------------------
-    // Stop the active spring
+    // Stop spring
     // -------------------------------------------------------------------------
 
     void StopSpring()
@@ -357,7 +471,8 @@ namespace
         }
 
         {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
 
             g_state.springStrength = 0.0f;
         }
@@ -377,20 +492,27 @@ namespace
         if (g_springEffect != nullptr)
         {
             g_springEffect->Release();
-            g_springEffect = nullptr;
+
+            g_springEffect =
+                nullptr;
         }
 
         if (g_ffbDevice != nullptr)
         {
             g_ffbDevice->Unacquire();
+
             g_ffbDevice->Release();
-            g_ffbDevice = nullptr;
+
+            g_ffbDevice =
+                nullptr;
         }
 
         {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
 
-            g_state = DeviceState{};
+            g_state =
+                DeviceState{};
         }
 
         UpdateStatus();
@@ -398,10 +520,7 @@ namespace
 
 
     // -------------------------------------------------------------------------
-    // Disable DirectInput's built-in auto-center.
-    //
-    // MultiFFBJoy owns the spring effect, so the device's own automatic
-    // centering should not be competing with it.
+    // Hardware auto-center
     // -------------------------------------------------------------------------
 
     void DisableHardwareAutoCenter()
@@ -432,8 +551,15 @@ namespace
 
         if (FAILED(hr))
         {
-            Log(
-                "Could not disable hardware auto-center: 0x%08lX",
+            //
+            // Some drivers/devices reject this property even though they
+            // support software-created FFB effects.
+            //
+            // Do NOT reject the device because of this.
+            //
+            Logf(
+                "Warning: could not disable hardware "
+                "auto-center: 0x%08lX",
                 static_cast<unsigned long>(hr));
         }
         else
@@ -445,14 +571,14 @@ namespace
 
 
     // -------------------------------------------------------------------------
-    // Create a DirectInput spring effect.
+    // Create spring effect
     //
-    // IMPORTANT:
+    // Important DirectInput detail:
     //
-    // GUID_Spring is the standard DirectInput spring effect.
+    // Because we provide TWO DICONDITION structures -- one for X and one for
+    // Y -- the effect acts independently on each axis.
     //
-    // The previous version incorrectly used GUID_Condition, which is not
-    // available as a DirectInput effect GUID in the headers we're targeting.
+    // That gives us exactly the basic joystick autocenter behavior we need.
     // -------------------------------------------------------------------------
 
     bool CreateSpringEffect()
@@ -466,6 +592,10 @@ namespace
             DIJOFS_Y
         };
 
+        //
+        // For a per-axis condition effect, direction is not used to rotate
+        // the condition. Keep the values at zero.
+        //
         LONG directions[2] =
         {
             0,
@@ -476,7 +606,8 @@ namespace
 
         for (int i = 0; i < 2; ++i)
         {
-            conditions[i].lOffset = 0;
+            conditions[i].lOffset =
+                0;
 
             conditions[i].lPositiveCoefficient =
                 10000;
@@ -490,7 +621,8 @@ namespace
             conditions[i].dwNegativeSaturation =
                 10000;
 
-            conditions[i].lDeadBand = 0;
+            conditions[i].lDeadBand =
+                0;
         }
 
         DIEFFECT effect{};
@@ -517,12 +649,21 @@ namespace
         effect.rglDirection =
             directions;
 
+        effect.lpEnvelope =
+            nullptr;
+
         effect.cbTypeSpecificParams =
             sizeof(conditions);
 
         effect.lpvTypeSpecificParams =
             conditions;
 
+        //
+        // Use the standard GUID_Spring.
+        //
+        // Microsoft documents GUID_Spring as the standard DirectInput
+        // condition effect.
+        //
         const HRESULT hr =
             g_ffbDevice->CreateEffect(
                 GUID_Spring,
@@ -532,11 +673,13 @@ namespace
 
         if (FAILED(hr))
         {
-            Log(
-                "CreateEffect(GUID_Spring) failed: 0x%08lX",
+            Logf(
+                "CreateEffect(GUID_Spring) failed: "
+                "0x%08lX",
                 static_cast<unsigned long>(hr));
 
-            g_springEffect = nullptr;
+            g_springEffect =
+                nullptr;
 
             return false;
         }
@@ -549,9 +692,7 @@ namespace
 
 
     // -------------------------------------------------------------------------
-    // Select first suitable generic FFB joystick.
-    //
-    // No SideWinder VID/PID/HWID is hard-coded.
+    // Select suitable physical FFB device
     // -------------------------------------------------------------------------
 
     bool SelectFirstSuitableDevice()
@@ -569,14 +710,15 @@ namespace
 
         if (FAILED(hr))
         {
-            Log(
-                "DirectInput enumeration failed: 0x%08lX",
+            Logf(
+                "DirectInput enumeration failed: "
+                "0x%08lX",
                 static_cast<unsigned long>(hr));
 
             return false;
         }
 
-        Log(
+        Logf(
             "Found %zu attached game-controller device(s).",
             g_candidates.size());
 
@@ -587,22 +729,28 @@ namespace
             const auto& candidate =
                 g_candidates[i];
 
-            Log(
-                "[%zu] %ls | axes=%lu | X=%s | Y=%s | FFB=%s",
+            Logf(
+                "[%zu] %ls | axes=%lu | X=%s | Y=%s | "
+                "FFB=%s | Spring=%s",
                 i,
                 candidate.name.c_str(),
                 candidate.axisCount,
                 candidate.hasXAxis ? "yes" : "no",
                 candidate.hasYAxis ? "yes" : "no",
-                candidate.forceFeedback ? "yes" : "no");
+                candidate.forceFeedback ? "yes" : "no",
+                candidate.springSupported ? "yes" : "no");
         }
 
         //
-        // For the prototype, select the first device that:
+        // We deliberately do NOT select a device merely because it advertises
+        // DIDC_FORCEFEEDBACK.
         //
-        //   1. Supports FFB.
-        //   2. Has at least two axes.
-        //   3. Exposes normal DirectInput X/Y axes.
+        // It must:
+        //
+        //   * have at least two axes
+        //   * have X and Y
+        //   * advertise FFB
+        //   * actually enumerate GUID_Spring
         //
         for (const auto& candidate :
              g_candidates)
@@ -619,6 +767,13 @@ namespace
                 continue;
             }
 
+            if (!candidate.springSupported)
+                continue;
+
+            Logf(
+                "Attempting FFB device: %ls",
+                candidate.name.c_str());
+
             IDirectInputDevice8W* device =
                 nullptr;
 
@@ -631,7 +786,7 @@ namespace
             if (FAILED(openResult) ||
                 device == nullptr)
             {
-                Log(
+                Logf(
                     "Could not open %ls: 0x%08lX",
                     candidate.name.c_str(),
                     static_cast<unsigned long>(
@@ -646,8 +801,9 @@ namespace
 
             if (FAILED(openResult))
             {
-                Log(
-                    "SetDataFormat failed for %ls: 0x%08lX",
+                Logf(
+                    "SetDataFormat failed for %ls: "
+                    "0x%08lX",
                     candidate.name.c_str(),
                     static_cast<unsigned long>(
                         openResult));
@@ -665,8 +821,9 @@ namespace
 
             if (FAILED(openResult))
             {
-                Log(
-                    "SetCooperativeLevel failed for %ls: 0x%08lX",
+                Logf(
+                    "SetCooperativeLevel failed for %ls: "
+                    "0x%08lX",
                     candidate.name.c_str(),
                     static_cast<unsigned long>(
                         openResult));
@@ -681,8 +838,9 @@ namespace
 
             if (FAILED(openResult))
             {
-                Log(
-                    "Acquire failed for %ls: 0x%08lX",
+                Logf(
+                    "Acquire failed for %ls: "
+                    "0x%08lX",
                     candidate.name.c_str(),
                     static_cast<unsigned long>(
                         openResult));
@@ -708,6 +866,9 @@ namespace
                 g_state.forceFeedback =
                     candidate.forceFeedback;
 
+                g_state.springSupported =
+                    candidate.springSupported;
+
                 g_state.acquired =
                     true;
 
@@ -718,7 +879,7 @@ namespace
                     DIJOFS_Y;
             }
 
-            Log(
+            Logf(
                 "Selected FFB device: %ls",
                 candidate.name.c_str());
 
@@ -727,10 +888,14 @@ namespace
             if (!CreateSpringEffect())
             {
                 ReleaseFFBDevice();
+
                 continue;
             }
 
             UpdateStatus();
+
+            Log(
+                "FFB joystick initialized successfully.");
 
             return true;
         }
@@ -743,12 +908,7 @@ namespace
 
 
     // -------------------------------------------------------------------------
-    // Configure spring strength.
-    //
-    // The spring is centered at zero and DirectInput calculates the restoring
-    // force based on the current physical axis position.
-    //
-    // x/y are intentionally NOT used as effect direction here.
+    // Set spring strength
     // -------------------------------------------------------------------------
 
     void SetSpringStrength(
@@ -763,7 +923,7 @@ namespace
         if (g_springEffect == nullptr)
         {
             Log(
-                "SPRING ignored: no active FFB effect.");
+                "SPRING ignored: no active spring effect.");
 
             return;
         }
@@ -788,11 +948,8 @@ namespace
 
         for (int i = 0; i < 2; ++i)
         {
-            //
-            // lOffset = 0 means the spring's neutral point is the physical
-            // center of the DirectInput axis.
-            //
-            conditions[i].lOffset = 0;
+            conditions[i].lOffset =
+                0;
 
             conditions[i].lPositiveCoefficient =
                 coefficient;
@@ -808,7 +965,8 @@ namespace
                 static_cast<DWORD>(
                     coefficient);
 
-            conditions[i].lDeadBand = 0;
+            conditions[i].lDeadBand =
+                0;
         }
 
         DIEFFECT effect{};
@@ -836,13 +994,21 @@ namespace
         effect.rglDirection =
             directions;
 
+        effect.lpEnvelope =
+            nullptr;
+
         effect.cbTypeSpecificParams =
             sizeof(conditions);
 
         effect.lpvTypeSpecificParams =
             conditions;
 
-        const HRESULT hr =
+        //
+        // The SideWinder should accept dynamic type-specific condition
+        // parameters. If a driver does not, it can return
+        // DIERR_EFFECTPLAYING. In that case we'll stop and restart it.
+        //
+        HRESULT hr =
             g_springEffect->SetParameters(
                 &effect,
                 DIEP_GAIN |
@@ -851,7 +1017,7 @@ namespace
 
         if (FAILED(hr))
         {
-            Log(
+            Logf(
                 "SetParameters failed: 0x%08lX",
                 static_cast<unsigned long>(hr));
 
@@ -867,20 +1033,15 @@ namespace
         }
 
         UpdateStatus();
+
+        Logf(
+            "Spring strength set to %.3f.",
+            strength);
     }
 
 
     // -------------------------------------------------------------------------
-    // Command parser
-    //
-    // Current prototype protocol:
-    //
-    //   PING
-    //   CENTER
-    //   STOP
-    //   SPRING <strength>
-    //
-    // CENTER is equivalent to enabling a medium-strength autocenter spring.
+    // Process UDP command
     // -------------------------------------------------------------------------
 
     void ProcessCommand(
@@ -918,7 +1079,7 @@ namespace
                 "RX: CENTER");
 
             SetSpringStrength(
-                0.5f);
+                0.50f);
 
             return;
         }
@@ -930,7 +1091,7 @@ namespace
             if (stream >>
                 strength)
             {
-                Log(
+                Logf(
                     "RX: SPRING %.3f",
                     strength);
 
@@ -948,7 +1109,7 @@ namespace
 
         if (!operation.empty())
         {
-            Log(
+            Logf(
                 "RX: unknown command: %s",
                 operation.c_str());
         }
@@ -1003,14 +1164,12 @@ namespace
                     WSAGetLastError();
 
                 if (error != WSAETIMEDOUT &&
-                    error != WSAEINTR)
+                    error != WSAEINTR &&
+                    g_running)
                 {
-                    if (g_running)
-                    {
-                        Log(
-                            "recvfrom() failed: %d",
-                            error);
-                    }
+                    Logf(
+                        "recvfrom() failed: %d",
+                        error);
                 }
             }
 
@@ -1060,7 +1219,7 @@ namespace
 
         if (result != 0)
         {
-            Log(
+            Logf(
                 "WSAStartup failed: %d",
                 result);
 
@@ -1076,7 +1235,7 @@ namespace
         if (g_socket ==
             INVALID_SOCKET)
         {
-            Log(
+            Logf(
                 "socket() failed: %d",
                 WSAGetLastError());
 
@@ -1102,7 +1261,9 @@ namespace
             AF_INET;
 
         address.sin_port =
-            htons(UDP_PORT);
+            htons(
+                static_cast<u_short>(
+                    UDP_PORT));
 
         if (inet_pton(
                 AF_INET,
@@ -1112,7 +1273,8 @@ namespace
             Log(
                 "inet_pton() failed.");
 
-            closesocket(g_socket);
+            closesocket(
+                g_socket);
 
             g_socket =
                 INVALID_SOCKET;
@@ -1128,11 +1290,12 @@ namespace
                     &address),
                 sizeof(address)) != 0)
         {
-            Log(
+            Logf(
                 "bind() failed: %d",
                 WSAGetLastError());
 
-            closesocket(g_socket);
+            closesocket(
+                g_socket);
 
             g_socket =
                 INVALID_SOCKET;
@@ -1142,7 +1305,7 @@ namespace
             return false;
         }
 
-        Log(
+        Logf(
             "UDP server listening on 127.0.0.1:%d.",
             UDP_PORT);
 
@@ -1309,9 +1472,8 @@ namespace
                         g_logWindow,
                         EM_REPLACESEL,
                         FALSE,
-                        reinterpret_cast<
-                            LPARAM>(
-                                line.c_str()));
+                        reinterpret_cast<LPARAM>(
+                            line.c_str()));
 
                     SendMessageW(
                         g_logWindow,
@@ -1347,7 +1509,7 @@ namespace
 
 
 // -----------------------------------------------------------------------------
-// Application entry point
+// Entry point
 // -----------------------------------------------------------------------------
 
 int APIENTRY wWinMain(
@@ -1412,7 +1574,7 @@ int APIENTRY wWinMain(
         "MultiFFBJoy starting.");
 
     //
-    // Initialize DirectInput.
+    // DirectInput initialization.
     //
     HRESULT hr =
         DirectInput8Create(
@@ -1425,8 +1587,9 @@ int APIENTRY wWinMain(
 
     if (FAILED(hr))
     {
-        Log(
-            "DirectInput8Create failed: 0x%08lX",
+        Logf(
+            "DirectInput8Create failed: "
+            "0x%08lX",
             static_cast<unsigned long>(hr));
     }
     else
@@ -1435,7 +1598,7 @@ int APIENTRY wWinMain(
     }
 
     //
-    // Start UDP command server.
+    // UDP.
     //
     if (!StartUdpServer())
     {
@@ -1444,7 +1607,7 @@ int APIENTRY wWinMain(
     }
 
     //
-    // Main Win32 message loop.
+    // Message loop.
     //
     MSG winMessage{};
 
