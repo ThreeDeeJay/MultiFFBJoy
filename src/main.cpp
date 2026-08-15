@@ -651,98 +651,33 @@ namespace
         if (g_ffbDevice == nullptr)
             return false;
 
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
+        Log(
+            "Testing minimal GUID_Spring creation...");
 
-        {
-            std::lock_guard<std::mutex> lock(
-                g_stateMutex);
-
-            // The SideWinder reports X/Y as its two FFB actuators.
-            // Keep the standard two-axis fallback if the device
-            // did not expose actuator offsets.
-            //
-            // We currently store the actual actuator offsets in the
-            // candidate during enumeration; this diagnostic build
-            // still expects the standard X/Y ordering.
-        }
-
-        LONG directions[2] =
-        {
-            0,
-            0
-        };
-
-        DICONDITION conditions[2]{};
-
-        for (int i = 0; i < 2; ++i)
-        {
-            conditions[i].lOffset =
-                0;
-
-            conditions[i].lPositiveCoefficient =
-                10000;
-
-            conditions[i].lNegativeCoefficient =
-                10000;
-
-            conditions[i].dwPositiveSaturation =
-                10000;
-
-            conditions[i].dwNegativeSaturation =
-                10000;
-
-            conditions[i].lDeadBand =
-                0;
-        }
-
-        DIEFFECT effect{};
-
-        effect.dwSize =
-            sizeof(effect);
-
-        effect.dwFlags =
-            DIEFF_CARTESIAN |
-            DIEFF_OBJECTOFFSETS;
-
-        effect.dwDuration =
-            INFINITE;
-
-        effect.dwGain =
-            DI_FFNOMINALMAX;
-
-        effect.cAxes =
-            2;
-
-        effect.rgdwAxes =
-            axes;
-
-        effect.rglDirection =
-            directions;
-
-        effect.lpEnvelope =
-            nullptr;
-
-        effect.cbTypeSpecificParams =
-            sizeof(conditions);
-
-        effect.lpvTypeSpecificParams =
-            conditions;
-
-        const HRESULT hr =
+        /*
+         * Important diagnostic step:
+         *
+         * Microsoft documents that CreateEffect() permits
+         * lpeff == NULL. In that case DirectInput creates
+         * the effect object without parameters, and the
+         * application subsequently initializes it with
+         * IDirectInputEffect::SetParameters().
+         *
+         * This deliberately avoids making any assumptions
+         * about the SideWinder driver's required DIEFFECT
+         * parameters.
+         */
+        HRESULT hr =
             g_ffbDevice->CreateEffect(
                 GUID_Spring,
-                &effect,
+                nullptr,
                 &g_springEffect,
                 nullptr);
 
         if (FAILED(hr))
         {
             Logf(
-                "CreateEffect(GUID_Spring) failed: "
+                "Minimal CreateEffect(GUID_Spring) failed: "
                 "0x%08lX",
                 static_cast<unsigned long>(hr));
 
@@ -753,7 +688,7 @@ namespace
         }
 
         Log(
-            "Created 2-axis spring effect.");
+            "Minimal GUID_Spring effect created successfully.");
 
         return true;
     }
