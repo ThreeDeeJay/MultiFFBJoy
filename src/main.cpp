@@ -320,7 +320,6 @@ namespace
         DWORD springEffType = 0;
         DWORD springStaticParams = 0;
         DWORD springDynamicParams = 0;
-        DWORD springCoordinates = 0;
     };
 
 
@@ -511,9 +510,6 @@ namespace
                         device,
                         effects))
                 {
-                    candidate.springCoordinates =
-                        effects.springCoordinates;
-
                     candidate.springSupported =
                         true;
 
