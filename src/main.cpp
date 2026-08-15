@@ -353,17 +353,12 @@ namespace
             context->springDynamicParams =
                 effectInfo->dwDynamicParams;
 
-            context->springCoordinates =
-                effectInfo->dwCoords;
-
             Logf(
                 "    GUID_Spring found: "
-                "effType=0x%08lX coords=0x%08lX "
+                "effType=0x%08lX "
                 "static=0x%08lX dynamic=0x%08lX",
                 static_cast<unsigned long>(
                     effectInfo->dwEffType),
-                static_cast<unsigned long>(
-                    effectInfo->dwCoords),
                 static_cast<unsigned long>(
                     effectInfo->dwStaticParams),
                 static_cast<unsigned long>(
