@@ -90,6 +90,10 @@ namespace
         DWORD springEffType = 0;
         DWORD springStaticParams = 0;
         DWORD springDynamicParams = 0;
+
+        DWORD springCoordinates = 0;
+
+        std::vector<DWORD> ffbActuatorOffsets;
     };
 
     std::vector<DeviceCandidate> g_candidates;
@@ -316,6 +320,7 @@ namespace
         DWORD springEffType = 0;
         DWORD springStaticParams = 0;
         DWORD springDynamicParams = 0;
+        DWORD springCoordinates = 0;
     };
 
 
@@ -348,12 +353,17 @@ namespace
             context->springDynamicParams =
                 effectInfo->dwDynamicParams;
 
+            context->springCoordinates =
+                effectInfo->dwCoords;
+
             Logf(
                 "    GUID_Spring found: "
-                "effType=0x%08lX static=0x%08lX "
-                "dynamic=0x%08lX",
+                "effType=0x%08lX coords=0x%08lX "
+                "static=0x%08lX dynamic=0x%08lX",
                 static_cast<unsigned long>(
                     effectInfo->dwEffType),
+                static_cast<unsigned long>(
+                    effectInfo->dwCoords),
                 static_cast<unsigned long>(
                     effectInfo->dwStaticParams),
                 static_cast<unsigned long>(
@@ -439,6 +449,17 @@ namespace
                 &axes,
                 DIDFT_AXIS);
 
+            std::vector<DWORD> ffbActuatorOffsets;
+
+            for (const auto& axis : axes.axes)
+            {
+                if (axis.isFFBActuator)
+                {
+                    ffbActuatorOffsets.push_back(
+                        axis.offset);
+                }
+            }
+
             Logf(
                 "  %ls: %lu axis object(s)",
                 instance->tszProductName,
@@ -495,6 +516,9 @@ namespace
                         device,
                         effects))
                 {
+                    candidate.springCoordinates =
+                        effects.springCoordinates;
+
                     candidate.springSupported =
                         true;
 
@@ -508,6 +532,9 @@ namespace
                         effects.springDynamicParams;
                 }
             }
+
+            candidate.ffbActuatorOffsets =
+                ffbActuatorOffsets;
 
             g_candidates.push_back(
                 candidate);
@@ -638,6 +665,19 @@ namespace
             DIJOFS_X,
             DIJOFS_Y
         };
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
+
+            // The SideWinder reports X/Y as its two FFB actuators.
+            // Keep the standard two-axis fallback if the device
+            // did not expose actuator offsets.
+            //
+            // We currently store the actual actuator offsets in the
+            // candidate during enumeration; this diagnostic build
+            // still expects the standard X/Y ordering.
+        }
 
         LONG directions[2] =
         {
