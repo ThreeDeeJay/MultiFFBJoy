@@ -824,6 +824,19 @@ namespace
                 continue;
             }
 
+            // A DirectInput FFB device must actually expose
+            // FFB actuator objects. Ordinary joystick axes
+            // advertising FFB effects are not sufficient.
+            if (candidate.ffbActuatorOffsets.size() < 2)
+            {
+                Logf(
+                    "Skipping %ls: only %zu FFB actuator axis(es).",
+                    candidate.name.c_str(),
+                    candidate.ffbActuatorOffsets.size());
+
+                continue;
+            }
+
             if (!candidate.springSupported)
                 continue;
 
