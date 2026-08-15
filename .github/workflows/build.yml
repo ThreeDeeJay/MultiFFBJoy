@@ -4,7 +4,7 @@ name: Build
 env:
   GH_TOKEN: "${{github.token}}"
   Branch: "${{github.ref_name}}"
-  Artifacts: "bin\x64\Release"
+  Artifacts: "bin\\x64\\Release"
   Extension: "*.exe"
   Title: "${{github.event.repository.name}}"
   Solution: "${{github.event.repository.name}}.sln" # .
