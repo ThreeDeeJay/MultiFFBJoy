@@ -221,10 +221,9 @@ namespace
             text);
     }
 
-
-    // -------------------------------------------------------------------------
-    // Axis enumeration
-    // -------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------
+    // DirectInput object enumeration
+    // -----------------------------------------------------------------------------
 
     struct AxisEnumerationContext
     {
@@ -232,6 +231,19 @@ namespace
 
         bool hasXAxis = false;
         bool hasYAxis = false;
+
+        struct Axis
+        {
+            DWORD offset = 0;
+            DWORD type = 0;
+            DWORD flags = 0;
+
+            bool isXAxis = false;
+            bool isYAxis = false;
+            bool isFFBActuator = false;
+        };
+
+        std::vector<Axis> axes;
     };
 
 
@@ -252,13 +264,42 @@ namespace
         if ((object->dwType & DIDFT_AXIS) == 0)
             return DIENUM_CONTINUE;
 
-        ++context->axisCount;
+        AxisEnumerationContext::Axis axis;
 
-        if (object->dwOfs == DIJOFS_X)
+        axis.offset =
+            object->dwOfs;
+
+        axis.type =
+            object->dwType;
+
+        axis.flags =
+            object->dwFlags;
+
+        axis.isXAxis =
+            object->dwOfs == DIJOFS_X;
+
+        axis.isYAxis =
+            object->dwOfs == DIJOFS_Y;
+
+        /*
+         * DIDFT_FFACTUATOR identifies an object that can be used
+         * as a force-feedback actuator.
+         *
+         * Do not assume that every X/Y axis is necessarily an
+         * FFB actuator.
+         */
+        axis.isFFBActuator =
+            (object->dwType & DIDFT_FFACTUATOR) != 0;
+
+        if (axis.isXAxis)
             context->hasXAxis = true;
 
-        if (object->dwOfs == DIJOFS_Y)
+        if (axis.isYAxis)
             context->hasYAxis = true;
+
+        ++context->axisCount;
+
+        context->axes.push_back(axis);
 
         return DIENUM_CONTINUE;
     }
@@ -306,6 +347,17 @@ namespace
 
             context->springDynamicParams =
                 effectInfo->dwDynamicParams;
+
+            Logf(
+                "    GUID_Spring found: "
+                "effType=0x%08lX static=0x%08lX "
+                "dynamic=0x%08lX",
+                static_cast<unsigned long>(
+                    effectInfo->dwEffType),
+                static_cast<unsigned long>(
+                    effectInfo->dwStaticParams),
+                static_cast<unsigned long>(
+                    effectInfo->dwDynamicParams));
 
             return DIENUM_STOP;
         }
@@ -386,6 +438,33 @@ namespace
                 EnumerateAxesCallback,
                 &axes,
                 DIDFT_AXIS);
+
+            Logf(
+                "  %ls: %lu axis object(s)",
+                instance->tszProductName,
+                axes.axisCount);
+
+            for (size_t axisIndex = 0;
+                 axisIndex < axes.axes.size();
+                 ++axisIndex)
+            {
+                const auto& axis =
+                    axes.axes[axisIndex];
+
+                Logf(
+                    "    axis[%zu]: offset=0x%lX type=0x%08lX "
+                    "flags=0x%08lX X=%s Y=%s FFBActuator=%s",
+                    axisIndex,
+                    static_cast<unsigned long>(
+                        axis.offset),
+                    static_cast<unsigned long>(
+                        axis.type),
+                    static_cast<unsigned long>(
+                        axis.flags),
+                    axis.isXAxis ? "yes" : "no",
+                    axis.isYAxis ? "yes" : "no",
+                    axis.isFFBActuator ? "YES" : "no");
+            }
 
             DeviceCandidate candidate;
 
