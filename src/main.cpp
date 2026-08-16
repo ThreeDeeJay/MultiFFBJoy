@@ -1047,20 +1047,6 @@ namespace
                     DIPROP_AUTOCENTER,
                     &autoCenter.diph);
 
-            if (FAILED(autoCenterHr))
-            {
-                Logf(
-                    "Warning: could not disable hardware auto-center "
-                    "before acquire: 0x%08lX",
-                    static_cast<unsigned long>(
-                        autoCenterHr));
-            }
-            else
-            {
-                Log(
-                    "Hardware auto-center disabled.");
-            }
-
             openResult =
                 device->Acquire();
 
