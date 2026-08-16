@@ -495,10 +495,17 @@ template <typename... Args>
     void ReleaseFFBDevice()
     {
         StopSpring();
+        StopTestConstantForce();
         if (g_springEffect != nullptr)
         {
             g_springEffect->Release();
             g_springEffect =
+            nullptr;
+        }
+        if (g_testConstantEffect != nullptr)
+        {
+            g_testConstantEffect->Release();
+            g_testConstantEffect =
             nullptr;
         }
         if (g_ffbDevice != nullptr)
@@ -527,8 +534,9 @@ template <typename... Args>
         property.diph.dwSize =
         sizeof(property);
         property.diph.dwHeaderSize =
-        sizeof(property.diph);
-        property.diph.dwObj = 0;
+        sizeof(DIPROPHEADER);
+        property.diph.dwObj =
+        0;
         property.diph.dwHow =
         DIPH_DEVICE;
         property.dwData =
@@ -736,8 +744,8 @@ template <typename... Args>
             "Found %zu attached game-controller device(s).",
             g_candidates.size());
         for (size_t i = 0;
-         i < g_candidates.size();
-         ++i)
+           i < g_candidates.size();
+           ++i)
         {
             const auto& candidate =
             g_candidates[i];
@@ -753,7 +761,7 @@ template <typename... Args>
                 candidate.springSupported ? "yes" : "no");
         }
         for (const auto& candidate :
-         g_candidates)
+           g_candidates)
         {
             if (!candidate.forceFeedback)
                 continue;
@@ -768,10 +776,6 @@ template <typename... Args>
          * A DirectInput FFB device must actually expose
          * FFB actuator objects. Ordinary joystick axes
          * advertising FFB effects are not sufficient.
-         *
-         * This intentionally rejects vJoy in your current
-         * configuration because its X/Y objects are not
-         * DIDFT_FFACTUATOR objects.
          */
             if (candidate.ffbActuatorOffsets.size() < 2)
             {
@@ -837,14 +841,10 @@ template <typename... Args>
          * Disable hardware auto-centering BEFORE acquiring
          * the device.
          *
-         * This is important for the desired architecture:
-         *
-         *   initialized  -> no force
-         *   flight mode  -> software spring enabled
-         *   other modes  -> whatever effect is commanded
-         *
-         * The joystick therefore should not fight us with its
-         * own hardware centering force when idle.
+         * When MultiFFBJoy is idle, the joystick should have
+         * no automatic centering force. Software effects
+         * such as the flight-stick spring will be responsible
+         * for centering when explicitly commanded.
          */
             DIPROPDWORD autoCenter{};
             autoCenter.diph.dwSize =
@@ -911,13 +911,22 @@ template <typename... Args>
                 "Selected FFB device: %ls",
                 candidate.name.c_str());
         /*
-         * Keep the second call as a fallback because some
-         * DirectInput devices/drivers behave differently
-         * depending on acquisition state.
+         * Create both effects while the device is acquired.
+         *
+         * The effects are initially inactive. Therefore simply
+         * creating them does NOT apply force to the joystick.
          */
-            DisableHardwareAutoCenter();
+            if (!CreateSpringEffect())
+            {
+                Log(
+                    "Failed to create spring effect.");
+                ReleaseFFBDevice();
+                continue;
+            }
             if (!CreateTestConstantForceEffect())
             {
+                Log(
+                    "Failed to create constant-force test effect.");
                 ReleaseFFBDevice();
                 continue;
             }
@@ -929,6 +938,84 @@ template <typename... Args>
         Log(
             "No suitable 2-axis FFB joystick found.");
         return false;
+    }
+    bool CreateSpringEffect()
+    {
+        if (g_ffbDevice == nullptr)
+            return false;
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
+        DICONDITION conditions[2]{};
+        for (int i = 0; i < 2; ++i)
+        {
+            conditions[i].lOffset =
+            0;
+            conditions[i].lPositiveCoefficient =
+            0;
+            conditions[i].lNegativeCoefficient =
+            0;
+            conditions[i].dwPositiveSaturation =
+            DI_FFNOMINALMAX;
+            conditions[i].dwNegativeSaturation =
+            DI_FFNOMINALMAX;
+            conditions[i].lDeadBand =
+            0;
+        }
+        DIEFFECT effect{};
+        effect.dwSize =
+        sizeof(DIEFFECT);
+        effect.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        effect.dwDuration =
+        INFINITE;
+        effect.dwSamplePeriod =
+        0;
+        effect.dwGain =
+        DI_FFNOMINALMAX;
+        effect.dwTriggerButton =
+        DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval =
+        0;
+        effect.cAxes =
+        2;
+        effect.rgdwAxes =
+        axes;
+        effect.rglDirection =
+        directions;
+        effect.lpEnvelope =
+        nullptr;
+        effect.cbTypeSpecificParams =
+        sizeof(conditions);
+        effect.lpvTypeSpecificParams =
+        conditions;
+        HRESULT hr =
+        g_ffbDevice->CreateEffect(
+            GUID_Spring,
+            &effect,
+            &g_springEffect,
+            nullptr);
+        if (FAILED(hr))
+        {
+            Logf(
+                "CreateEffect(GUID_Spring) failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            g_springEffect =
+            nullptr;
+            return false;
+        }
+        Log(
+            "Spring effect created.");
+        return true;
     }
 // -------------------------------------------------------------------------
 // Set spring strength
