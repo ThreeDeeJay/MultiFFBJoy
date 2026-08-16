@@ -51,6 +51,7 @@ namespace
         DWORD xAxisOffset = DIJOFS_X;
         DWORD yAxisOffset = DIJOFS_Y;
         float springStrength = 0.0f;
+        bool springPersistent = false;
         std::chrono::steady_clock::time_point lastCommand =
         std::chrono::steady_clock::now();
     };
@@ -468,7 +469,10 @@ template <typename... Args>
         {
             std::lock_guard<std::mutex> lock(
                 g_stateMutex);
-            g_state.springStrength = 0.0f;
+            g_state.springStrength =
+            0.0f;
+            g_state.springPersistent =
+            false;
         }
         UpdateStatus();
     }
@@ -822,8 +826,8 @@ template <typename... Args>
             "Found %zu attached game-controller device(s).",
             g_candidates.size());
         for (size_t i = 0;
-         i < g_candidates.size();
-         ++i)
+           i < g_candidates.size();
+           ++i)
         {
             const auto& candidate =
             g_candidates[i];
@@ -839,7 +843,7 @@ template <typename... Args>
                 candidate.springSupported ? "yes" : "no");
         }
         for (const auto& candidate :
-         g_candidates)
+           g_candidates)
         {
             if (!candidate.forceFeedback)
                 continue;
@@ -1044,15 +1048,6 @@ template <typename... Args>
             0,
             0
         };
-    /*
-     * DirectInput condition coefficients use the range
-     * -10000..10000.
-     *
-     * A positive coefficient produces a restoring force
-     * toward the condition offset. Since the offset is zero,
-     * this gives us a spring centered on the physical
-     * joystick center.
-     */
         const LONG coefficient =
         static_cast<LONG>(
             strength *
@@ -1082,10 +1077,6 @@ template <typename... Args>
         effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
-    /*
-     * INFINITE means the effect itself does not expire.
-     * It remains active until Stop() or the device is released.
-     */
         effect.dwDuration =
         INFINITE;
         effect.dwSamplePeriod =
@@ -1108,18 +1099,11 @@ template <typename... Args>
         sizeof(conditions);
         effect.lpvTypeSpecificParams =
         conditions;
-    /*
-     * Update the existing spring and explicitly start it.
-     *
-     * DIEP_START makes this a persistent active effect rather
-     * than merely changing parameters on an inactive effect.
-     */
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
             DIEP_GAIN |
-            DIEP_TYPESPECIFICPARAMS |
-            DIEP_START);
+            DIEP_TYPESPECIFICPARAMS);
         if (FAILED(hr))
         {
             Logf(
@@ -1127,6 +1111,26 @@ template <typename... Args>
                 "0x%08lX",
                 static_cast<unsigned long>(hr));
             return;
+        }
+    /*
+     * Explicitly stop first so that changing the spring
+     * parameters cannot leave an old effect state running.
+     */
+        g_springEffect->Stop();
+        if (strength > 0.0f)
+        {
+            hr =
+            g_springEffect->Start(
+                1,
+                0);
+            if (FAILED(hr))
+            {
+                Logf(
+                    "Spring Start failed: "
+                    "0x%08lX",
+                    static_cast<unsigned long>(hr));
+                return;
+            }
         }
         {
             std::lock_guard<std::mutex> lock(
@@ -1138,8 +1142,7 @@ template <typename... Args>
         Logf(
             "Spring strength set to %.3f.",
             strength);
-    }
-// -------------------------------------------------------------------------
+    }--------------------------------------------------------------------
 // Process UDP command
 // -------------------------------------------------------------------------
     void ProcessCommand(
@@ -1175,14 +1178,14 @@ template <typename... Args>
         {
             Log(
                 "RX: CENTER");
-    /*
-     * CENTER means full-strength continuous centering.
-     *
-     * The spring remains active indefinitely until another
-     * command explicitly stops or changes it.
-     */
             SetSpringStrength(
                 1.0f);
+            {
+                std::lock_guard<std::mutex> lock(
+                    g_stateMutex);
+                g_state.springPersistent =
+                true;
+            }
             return;
         }
         if (operation == "SPRING")
@@ -1332,7 +1335,17 @@ template <typename... Args>
             }
             if (timedOut)
             {
-                StopSpring();
+                bool springPersistent = false;
+                {
+                    std::lock_guard<std::mutex> lock(
+                        g_stateMutex);
+                    springPersistent =
+                    g_state.springPersistent;
+                }
+                if (!springPersistent)
+                {
+                    StopSpring();
+                }
             }
         }
     }
