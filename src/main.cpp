@@ -817,12 +817,14 @@ namespace
         effect.cAxes =
             2;
 
+        DWORD axes[2] =`
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+
         effect.rgdwAxes =
-            (DWORD[])
-            {
-                DIJOFS_X,
-                DIJOFS_Y
-            };
+            axes;
 
         effect.rglDirection =
             direction;
@@ -1111,7 +1113,7 @@ namespace
 
             DisableHardwareAutoCenter();
 
-            if (!CreateSpringEffect())
+            if (!CreateTestConstantForceEffect())
             {
                 ReleaseFFBDevice();
 
