@@ -735,8 +735,8 @@ template <typename... Args>
             "Found %zu attached game-controller device(s).",
             g_candidates.size());
         for (size_t i = 0;
-            i < g_candidates.size();
-            ++i)
+           i < g_candidates.size();
+           ++i)
         {
             const auto& candidate =
             g_candidates[i];
@@ -752,7 +752,7 @@ template <typename... Args>
                 candidate.springSupported ? "yes" : "no");
         }
         for (const auto& candidate :
-            g_candidates)
+           g_candidates)
         {
             if (!candidate.forceFeedback)
                 continue;
@@ -763,9 +763,15 @@ template <typename... Args>
             {
                 continue;
             }
-// A DirectInput FFB device must actually expose
-// FFB actuator objects. Ordinary joystick axes
-// advertising FFB effects are not sufficient.
+        /*
+         * A DirectInput FFB device must actually expose
+         * FFB actuator objects. Ordinary joystick axes
+         * advertising FFB effects are not sufficient.
+         *
+         * This intentionally rejects vJoy in your current
+         * configuration because its X/Y objects are not
+         * DIDFT_FFACTUATOR objects.
+         */
             if (candidate.ffbActuatorOffsets.size() < 2)
             {
                 Logf(
@@ -826,11 +832,20 @@ template <typename... Args>
                 device->Release();
                 continue;
             }
-// DirectInput recommends disabling hardware autocenter before
-// playing force-feedback effects. This must be done while the
-// device is not acquired.
-            DIPROPDWORD autoCenter;
-            ZeroMemory(&autoCenter, sizeof(autoCenter));
+        /*
+         * Disable hardware auto-centering BEFORE acquiring
+         * the device.
+         *
+         * This is important for the desired architecture:
+         *
+         *   initialized  -> no force
+         *   flight mode  -> software spring enabled
+         *   other modes  -> whatever effect is commanded
+         *
+         * The joystick therefore should not fight us with its
+         * own hardware centering force when idle.
+         */
+            DIPROPDWORD autoCenter{};
             autoCenter.diph.dwSize =
             sizeof(DIPROPDWORD);
             autoCenter.diph.dwHeaderSize =
@@ -841,10 +856,23 @@ template <typename... Args>
             DIPH_DEVICE;
             autoCenter.dwData =
             DIPROPAUTOCENTER_OFF;
-            HRESULT autoCenterHr =
+            const HRESULT autoCenterResult =
             device->SetProperty(
                 DIPROP_AUTOCENTER,
                 &autoCenter.diph);
+            if (FAILED(autoCenterResult))
+            {
+                Logf(
+                    "Warning: could not disable hardware "
+                    "auto-center before Acquire: 0x%08lX",
+                    static_cast<unsigned long>(
+                        autoCenterResult));
+            }
+            else
+            {
+                Log(
+                    "Hardware auto-center disabled.");
+            }
             openResult =
             device->Acquire();
             if (FAILED(openResult))
@@ -881,6 +909,11 @@ template <typename... Args>
             Logf(
                 "Selected FFB device: %ls",
                 candidate.name.c_str());
+        /*
+         * Keep the second call as a fallback because some
+         * DirectInput devices/drivers behave differently
+         * depending on acquisition state.
+         */
             DisableHardwareAutoCenter();
             if (!CreateTestConstantForceEffect())
             {
@@ -1353,8 +1386,7 @@ template <typename... Args>
                     210,
                     window,
                     nullptr,
-                    GetModuleHandleW(
-                        nullptr),
+                    GetModuleHandleW(nullptr),
                     nullptr);
                 g_logWindow =
                 CreateWindowExW(
@@ -1370,11 +1402,10 @@ template <typename... Args>
                     12,
                     230,
                     700,
-                    280,
+                    180,
                     window,
                     nullptr,
-                    GetModuleHandleW(
-                        nullptr),
+                    GetModuleHandleW(nullptr),
                     nullptr);
                 CreateWindowExW(
                     0,
@@ -1387,7 +1418,7 @@ template <typename... Args>
                     430,
                     80,
                     30,
-                    hwnd,
+                    window,
                     reinterpret_cast<HMENU>(
                         IDC_FFB_UP),
                     GetModuleHandleW(nullptr),
@@ -1403,7 +1434,7 @@ template <typename... Args>
                     465,
                     80,
                     30,
-                    hwnd,
+                    window,
                     reinterpret_cast<HMENU>(
                         IDC_FFB_LEFT),
                     GetModuleHandleW(nullptr),
@@ -1419,7 +1450,7 @@ template <typename... Args>
                     465,
                     80,
                     30,
-                    hwnd,
+                    window,
                     reinterpret_cast<HMENU>(
                         IDC_FFB_STOP),
                     GetModuleHandleW(nullptr),
@@ -1435,7 +1466,7 @@ template <typename... Args>
                     465,
                     80,
                     30,
-                    hwnd,
+                    window,
                     reinterpret_cast<HMENU>(
                         IDC_FFB_RIGHT),
                     GetModuleHandleW(nullptr),
@@ -1451,7 +1482,7 @@ template <typename... Args>
                     500,
                     80,
                     30,
-                    hwnd,
+                    window,
                     reinterpret_cast<HMENU>(
                         IDC_FFB_DOWN),
                     GetModuleHandleW(nullptr),
@@ -1488,38 +1519,48 @@ template <typename... Args>
                             width - 24),
                         std::max(
                             100,
-                            height - 242),
+                            height - 360),
                         TRUE);
                 }
                 return 0;
             }
         case WM_COMMAND:
             {
-                const int controlId =
-                LOWORD(wParam);
                 if (HIWORD(wParam) != BN_CLICKED)
                 {
                     break;
                 }
+                const int controlId =
+                LOWORD(wParam);
                 switch (controlId)
                 {
                 case IDC_FFB_UP:
+                    Log(
+                        "TX: TEST_FFB 0 -10000");
                     SendUdpCommand(
                         "TEST_FFB 0 -10000");
                     return 0;
                 case IDC_FFB_DOWN:
+                    Log(
+                        "TX: TEST_FFB 0 10000");
                     SendUdpCommand(
                         "TEST_FFB 0 10000");
                     return 0;
                 case IDC_FFB_LEFT:
+                    Log(
+                        "TX: TEST_FFB -10000 0");
                     SendUdpCommand(
                         "TEST_FFB -10000 0");
                     return 0;
                 case IDC_FFB_RIGHT:
+                    Log(
+                        "TX: TEST_FFB 10000 0");
                     SendUdpCommand(
                         "TEST_FFB 10000 0");
                     return 0;
                 case IDC_FFB_STOP:
+                    Log(
+                        "TX: TEST_FFB 0 0");
                     SendUdpCommand(
                         "TEST_FFB 0 0");
                     return 0;
