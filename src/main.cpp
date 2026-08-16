@@ -4,6 +4,7 @@
 #define IDC_FFB_LEFT 2003
 #define IDC_FFB_RIGHT 2004
 #define IDC_FFB_STOP 2005
+#define IDC_FFB_CENTER 2006
 #include <windows.h>
 #include <dinput.h>
 #include <winsock2.h>
@@ -735,8 +736,8 @@ template <typename... Args>
             "Found %zu attached game-controller device(s).",
             g_candidates.size());
         for (size_t i = 0;
-           i < g_candidates.size();
-           ++i)
+         i < g_candidates.size();
+         ++i)
         {
             const auto& candidate =
             g_candidates[i];
@@ -752,7 +753,7 @@ template <typename... Args>
                 candidate.springSupported ? "yes" : "no");
         }
         for (const auto& candidate :
-           g_candidates)
+         g_candidates)
         {
             if (!candidate.forceFeedback)
                 continue;
@@ -1458,6 +1459,22 @@ template <typename... Args>
                 CreateWindowExW(
                     0,
                     L"BUTTON",
+                    L"CENTER",
+                    WS_CHILD |
+                    WS_VISIBLE |
+                    BS_PUSHBUTTON,
+                    300,
+                    465,
+                    90,
+                    30,
+                    window,
+                    reinterpret_cast<HMENU>(
+                        IDC_FFB_CENTER),
+                    GetModuleHandleW(nullptr),
+                    nullptr);
+                CreateWindowExW(
+                    0,
+                    L"BUTTON",
                     L"RIGHT",
                     WS_CHILD |
                     WS_VISIBLE |
@@ -1535,34 +1552,44 @@ template <typename... Args>
                 switch (controlId)
                 {
                 case IDC_FFB_UP:
-                    Log(
-                        "TX: TEST_FFB 0 -10000");
-                    SendUdpCommand(
-                        "TEST_FFB 0 -10000");
-                    return 0;
-                case IDC_FFB_DOWN:
+        /*
+         * DirectInput Y direction is inverted relative
+         * to the physical/UI convention we're using.
+         */
                     Log(
                         "TX: TEST_FFB 0 10000");
                     SendUdpCommand(
                         "TEST_FFB 0 10000");
                     return 0;
-                case IDC_FFB_LEFT:
+                case IDC_FFB_DOWN:
                     Log(
-                        "TX: TEST_FFB -10000 0");
+                        "TX: TEST_FFB 0 -10000");
                     SendUdpCommand(
-                        "TEST_FFB -10000 0");
+                        "TEST_FFB 0 -10000");
                     return 0;
-                case IDC_FFB_RIGHT:
+                case IDC_FFB_LEFT:
                     Log(
                         "TX: TEST_FFB 10000 0");
                     SendUdpCommand(
                         "TEST_FFB 10000 0");
+                    return 0;
+                case IDC_FFB_RIGHT:
+                    Log(
+                        "TX: TEST_FFB -10000 0");
+                    SendUdpCommand(
+                        "TEST_FFB -10000 0");
                     return 0;
                 case IDC_FFB_STOP:
                     Log(
                         "TX: TEST_FFB 0 0");
                     SendUdpCommand(
                         "TEST_FFB 0 0");
+                    return 0;
+                case IDC_FFB_CENTER:
+                    Log(
+                        "TX: CENTER");
+                    SendUdpCommand(
+                        "CENTER");
                     return 0;
                 default:
                     break;
