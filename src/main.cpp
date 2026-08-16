@@ -822,8 +822,8 @@ template <typename... Args>
             "Found %zu attached game-controller device(s).",
             g_candidates.size());
         for (size_t i = 0;
-           i < g_candidates.size();
-           ++i)
+         i < g_candidates.size();
+         ++i)
         {
             const auto& candidate =
             g_candidates[i];
@@ -839,7 +839,7 @@ template <typename... Args>
                 candidate.springSupported ? "yes" : "no");
         }
         for (const auto& candidate :
-           g_candidates)
+         g_candidates)
         {
             if (!candidate.forceFeedback)
                 continue;
@@ -1044,11 +1044,24 @@ template <typename... Args>
             0,
             0
         };
+    /*
+     * DirectInput condition coefficients use the range
+     * -10000..10000.
+     *
+     * A positive coefficient produces a restoring force
+     * toward the condition offset. Since the offset is zero,
+     * this gives us a spring centered on the physical
+     * joystick center.
+     */
         const LONG coefficient =
         static_cast<LONG>(
-            strength * 10000.0f);
+            strength *
+            static_cast<float>(
+                DI_FFNOMINALMAX));
         DICONDITION conditions[2]{};
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0;
+           i < 2;
+           ++i)
         {
             conditions[i].lOffset =
             0;
@@ -1057,25 +1070,32 @@ template <typename... Args>
             conditions[i].lNegativeCoefficient =
             coefficient;
             conditions[i].dwPositiveSaturation =
-            static_cast<DWORD>(
-                coefficient);
+            DI_FFNOMINALMAX;
             conditions[i].dwNegativeSaturation =
-            static_cast<DWORD>(
-                coefficient);
+            DI_FFNOMINALMAX;
             conditions[i].lDeadBand =
             0;
         }
         DIEFFECT effect{};
         effect.dwSize =
-        sizeof(effect);
+        sizeof(DIEFFECT);
         effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
+    /*
+     * INFINITE means the effect itself does not expire.
+     * It remains active until Stop() or the device is released.
+     */
         effect.dwDuration =
         INFINITE;
+        effect.dwSamplePeriod =
+        0;
         effect.dwGain =
-        static_cast<DWORD>(
-            strength * 10000.0f);
+        DI_FFNOMINALMAX;
+        effect.dwTriggerButton =
+        DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval =
+        0;
         effect.cAxes =
         2;
         effect.rgdwAxes =
@@ -1088,6 +1108,12 @@ template <typename... Args>
         sizeof(conditions);
         effect.lpvTypeSpecificParams =
         conditions;
+    /*
+     * Update the existing spring and explicitly start it.
+     *
+     * DIEP_START makes this a persistent active effect rather
+     * than merely changing parameters on an inactive effect.
+     */
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
@@ -1097,7 +1123,8 @@ template <typename... Args>
         if (FAILED(hr))
         {
             Logf(
-                "SetParameters failed: 0x%08lX",
+                "SetParameters(Spring) failed: "
+                "0x%08lX",
                 static_cast<unsigned long>(hr));
             return;
         }
@@ -1148,8 +1175,14 @@ template <typename... Args>
         {
             Log(
                 "RX: CENTER");
+    /*
+     * CENTER means full-strength continuous centering.
+     *
+     * The spring remains active indefinitely until another
+     * command explicitly stops or changes it.
+     */
             SetSpringStrength(
-                0.50f);
+                1.0f);
             return;
         }
         if (operation == "SPRING")
