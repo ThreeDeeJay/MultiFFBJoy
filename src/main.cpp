@@ -480,7 +480,7 @@ template <typename... Args>
     {
         if (g_testConstantEffect == nullptr)
             return;
-        HRESULT hr =
+        const HRESULT hr =
         g_testConstantEffect->Stop();
         if (FAILED(hr))
         {
@@ -826,8 +826,8 @@ template <typename... Args>
             "Found %zu attached game-controller device(s).",
             g_candidates.size());
         for (size_t i = 0;
-           i < g_candidates.size();
-           ++i)
+            i < g_candidates.size();
+            ++i)
         {
             const auto& candidate =
             g_candidates[i];
@@ -843,7 +843,7 @@ template <typename... Args>
                 candidate.springSupported ? "yes" : "no");
         }
         for (const auto& candidate :
-           g_candidates)
+            g_candidates)
         {
             if (!candidate.forceFeedback)
                 continue;
@@ -854,11 +854,14 @@ template <typename... Args>
             {
                 continue;
             }
-        /*
-         * A DirectInput FFB device must actually expose
-         * FFB actuator objects. Ordinary joystick axes
-         * advertising FFB effects are not sufficient.
-         */
+/*
+ * A DirectInput FFB device must actually expose
+ * FFB actuator objects.
+ *
+ * This intentionally rejects vJoy in the current
+ * configuration because its X/Y objects are not
+ * DIDFT_FFACTUATOR objects.
+ */
             if (candidate.ffbActuatorOffsets.size() < 2)
             {
                 Logf(
@@ -919,15 +922,12 @@ template <typename... Args>
                 device->Release();
                 continue;
             }
-        /*
-         * Disable hardware auto-centering BEFORE acquiring
-         * the device.
-         *
-         * When MultiFFBJoy is idle, the joystick should have
-         * no automatic centering force. Software effects
-         * such as the flight-stick spring will be responsible
-         * for centering when explicitly commanded.
-         */
+/*
+ * Disable hardware auto-center BEFORE acquiring.
+ *
+ * We want all centering behavior to come from our
+ * software-controlled DirectInput spring effect.
+ */
             DIPROPDWORD autoCenter{};
             autoCenter.diph.dwSize =
             sizeof(DIPROPDWORD);
@@ -992,12 +992,6 @@ template <typename... Args>
             Logf(
                 "Selected FFB device: %ls",
                 candidate.name.c_str());
-        /*
-         * Create both effects while the device is acquired.
-         *
-         * The effects are initially inactive. Therefore simply
-         * creating them does NOT apply force to the joystick.
-         */
             if (!CreateSpringEffect())
             {
                 Log(
@@ -1021,6 +1015,90 @@ template <typename... Args>
             "No suitable 2-axis FFB joystick found.");
         return false;
     }
+    bool EnsureFFBDeviceReady()
+    {
+        if (g_ffbDevice == nullptr)
+        {
+            Log(
+                "FFB device is not initialized; attempting reacquisition.");
+            return SelectFirstSuitableDevice();
+        }
+/*
+ * Querying the device state tells us whether DirectInput
+ * still considers our interface acquired.
+ */
+        DIJOYSTATE2 joystickState{};
+        HRESULT hr =
+        g_ffbDevice->GetDeviceState(
+            sizeof(DIJOYSTATE2),
+            &joystickState);
+        if (SUCCEEDED(hr))
+        {
+            {
+                std::lock_guard<std::mutex> lock(
+                    g_stateMutex);
+                g_state.acquired =
+                true;
+            }
+            return true;
+        }
+/*
+ * BeamNG may have taken the exclusive DirectInput
+ * interface away from us.
+ *
+ * Try the inexpensive recovery path first.
+ */
+        if (hr == DIERR_INPUTLOST ||
+            hr == DIERR_NOTACQUIRED)
+        {
+            Logf(
+                "FFB device acquisition lost "
+                "(0x%08lX); attempting Acquire().",
+                static_cast<unsigned long>(hr));
+            hr =
+            g_ffbDevice->Acquire();
+            if (SUCCEEDED(hr))
+            {
+                {
+                    std::lock_guard<std::mutex> lock(
+                        g_stateMutex);
+                    g_state.acquired =
+                    true;
+                }
+                Log(
+                    "FFB device reacquired.");
+                return true;
+            }
+            Logf(
+                "Acquire() failed: 0x%08lX",
+                static_cast<unsigned long>(hr));
+        }
+        else
+        {
+            Logf(
+                "GetDeviceState() failed: 0x%08lX",
+                static_cast<unsigned long>(hr));
+        }
+/*
+ * The existing DirectInput interface is no longer usable.
+ *
+ * Completely release it and enumerate again. This is
+ * especially important when BeamNG has acquired the
+ * device exclusively and our old DirectInput object
+ * cannot simply be re-acquired.
+ */
+        Log(
+            "Reinitializing FFB device.");
+        if (!SelectFirstSuitableDevice())
+        {
+            Log(
+                "FFB device reacquisition failed.");
+            return false;
+        }
+        Log(
+            "FFB device successfully reinitialized.");
+        return true;
+    }
 // -------------------------------------------------------------------------
 // Set spring strength
 // -------------------------------------------------------------------------
@@ -1032,11 +1110,22 @@ template <typename... Args>
             strength,
             0.0f,
             1.0f);
+        if (g_ffbDevice == nullptr)
+        {
+            Log(
+                "SPRING ignored: no active FFB device.");
+            return;
+        }
         if (g_springEffect == nullptr)
         {
             Log(
-                "SPRING ignored: no active spring effect.");
-            return;
+                "Spring effect is missing; recreating it.");
+            if (!CreateSpringEffect())
+            {
+                Log(
+                    "Could not recreate spring effect.");
+                return;
+            }
         }
         DWORD axes[2] =
         {
@@ -1050,13 +1139,9 @@ template <typename... Args>
         };
         const LONG coefficient =
         static_cast<LONG>(
-            strength *
-            static_cast<float>(
-                DI_FFNOMINALMAX));
+            strength * 10000.0f);
         DICONDITION conditions[2]{};
-        for (int i = 0;
-           i < 2;
-           ++i)
+        for (int i = 0; i < 2; ++i)
         {
             conditions[i].lOffset =
             0;
@@ -1065,28 +1150,24 @@ template <typename... Args>
             conditions[i].lNegativeCoefficient =
             coefficient;
             conditions[i].dwPositiveSaturation =
-            DI_FFNOMINALMAX;
+            static_cast<DWORD>(
+                coefficient);
             conditions[i].dwNegativeSaturation =
-            DI_FFNOMINALMAX;
+            static_cast<DWORD>(
+                coefficient);
             conditions[i].lDeadBand =
             0;
         }
         DIEFFECT effect{};
         effect.dwSize =
-        sizeof(DIEFFECT);
+        sizeof(effect);
         effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
         effect.dwDuration =
         INFINITE;
-        effect.dwSamplePeriod =
-        0;
         effect.dwGain =
         DI_FFNOMINALMAX;
-        effect.dwTriggerButton =
-        DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval =
-        0;
         effect.cAxes =
         2;
         effect.rgdwAxes =
@@ -1110,27 +1191,28 @@ template <typename... Args>
                 "SetParameters(Spring) failed: "
                 "0x%08lX",
                 static_cast<unsigned long>(hr));
+/*
+ * A stale effect object is one likely cause of
+ * failures after BeamNG has taken/released the FFB
+ * device. Destroy it so the next command will create
+ * a fresh effect.
+ */
+            g_springEffect->Release();
+            g_springEffect =
+            nullptr;
             return;
         }
-    /*
-     * Explicitly stop first so that changing the spring
-     * parameters cannot leave an old effect state running.
-     */
-        g_springEffect->Stop();
-        if (strength > 0.0f)
+        hr =
+        g_springEffect->Start(
+            1,
+            0);
+        if (FAILED(hr))
         {
-            hr =
-            g_springEffect->Start(
-                1,
-                0);
-            if (FAILED(hr))
-            {
-                Logf(
-                    "Spring Start failed: "
-                    "0x%08lX",
-                    static_cast<unsigned long>(hr));
-                return;
-            }
+            Logf(
+                "Spring Start failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            return;
         }
         {
             std::lock_guard<std::mutex> lock(
@@ -1165,13 +1247,6 @@ template <typename... Args>
             Log(
                 "RX: STOP");
             StopSpring();
-/*
-* Also stop the constant-force test effect.
-*
-* This makes STOP a generic "remove active FFB"
-* command, which will be useful once BeamNG is
-* driving the helper.
-*/
             StopTestConstantForce();
             return;
         }
@@ -1179,14 +1254,14 @@ template <typename... Args>
         {
             Log(
                 "RX: CENTER");
+            if (!EnsureFFBDeviceReady())
+            {
+                Log(
+                    "CENTER ignored: FFB device unavailable.");
+                return;
+            }
             SetSpringStrength(
                 1.0f);
-            {
-                std::lock_guard<std::mutex> lock(
-                    g_stateMutex);
-                g_state.springPersistent =
-                true;
-            }
             return;
         }
         if (operation == "SPRING")
@@ -1198,6 +1273,12 @@ template <typename... Args>
                 Logf(
                     "RX: SPRING %.3f",
                     strength);
+                if (!EnsureFFBDeviceReady())
+                {
+                    Log(
+                        "SPRING ignored: FFB device unavailable.");
+                    return;
+                }
                 SetSpringStrength(
                     strength);
                 return;
@@ -1207,28 +1288,11 @@ template <typename... Args>
             return;
         }
 /*
-* TEST_FFB X Y
-*
-* X and Y are DirectInput force directions in the
-* range -10000..10000.
-*
-* Examples:
-*
-* TEST_FFB 10000 0
-* Force right
-*
-* TEST_FFB -10000 0
-* Force left
-*
-* TEST_FFB 0 -10000
-* Force up
-*
-* TEST_FFB 0 10000
-* Force down
-*
-* TEST_FFB 0 0
-* Stop the test force
-*/
+ * TEST_FFB X Y
+ *
+ * X and Y are DirectInput force directions in the
+ * range -10000..10000.
+ */
         if (operation == "TEST_FFB")
         {
             LONG x = 0;
@@ -1237,11 +1301,13 @@ template <typename... Args>
                 x >>
                 y)
             {
-                x = std::clamp<LONG>(
+                x =
+                std::clamp<LONG>(
                     x,
                     -DI_FFNOMINALMAX,
                     DI_FFNOMINALMAX);
-                y = std::clamp<LONG>(
+                y =
+                std::clamp<LONG>(
                     y,
                     -DI_FFNOMINALMAX,
                     DI_FFNOMINALMAX);
@@ -1253,631 +1319,628 @@ template <typename... Args>
                     y == 0)
                 {
                     StopTestConstantForce();
+                    return;
                 }
-                else
+                if (!EnsureFFBDeviceReady())
                 {
-                    SetTestConstantForce(
-                        x,
-                        y);
+                    Log(
+                        "TEST_FFB ignored: FFB device unavailable.");
+                    return;
                 }
+                SetTestConstantForce(
+                    x,
+                    y);
                 return;
             }
-            Log(
-                "RX: malformed TEST_FFB command.");
-            return;
-        }
-        if (!operation.empty())
-        {
             Logf(
                 "RX: unknown command: %s",
                 operation.c_str());
         }
-    }
 // -------------------------------------------------------------------------
 // UDP worker
 // -------------------------------------------------------------------------
-    void NetworkThread()
-    {
-        while (g_running)
+        void NetworkThread()
         {
-            char buffer[1024]{};
-            sockaddr_in sender{};
-            int senderLength =
-            sizeof(sender);
-            const int received =
-            recvfrom(
-                g_socket,
-                buffer,
-                sizeof(buffer) - 1,
-                0,
-                reinterpret_cast<sockaddr*>(
-                    &sender),
-                &senderLength);
-            if (received > 0)
+            while (g_running)
             {
-                buffer[received] =
-                '\0';
+                char buffer[1024]{};
+                sockaddr_in sender{};
+                int senderLength =
+                sizeof(sender);
+                const int received =
+                recvfrom(
+                    g_socket,
+                    buffer,
+                    sizeof(buffer) - 1,
+                    0,
+                    reinterpret_cast<sockaddr*>(
+                        &sender),
+                    &senderLength);
+                if (received > 0)
+                {
+                    buffer[received] =
+                    '\0';
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            g_stateMutex);
+                        g_state.lastCommand =
+                        std::chrono::steady_clock::now();
+                    }
+                    ProcessCommand(
+                        std::string(buffer));
+                }
+                if (received == SOCKET_ERROR)
+                {
+                    const int error =
+                    WSAGetLastError();
+                    if (error != WSAETIMEDOUT &&
+                        error != WSAEINTR &&
+                        g_running)
+                    {
+                        Logf(
+                            "recvfrom() failed: %d",
+                            error);
+                    }
+                }
+                bool timedOut = false;
                 {
                     std::lock_guard<std::mutex> lock(
                         g_stateMutex);
-                    g_state.lastCommand =
+                    const auto now =
                     std::chrono::steady_clock::now();
+                    const auto elapsed =
+                    std::chrono::duration_cast<
+                    std::chrono::milliseconds>(
+                        now -
+                        g_state.lastCommand);
+                    timedOut =
+                    elapsed.count() >
+                    COMMAND_TIMEOUT_MS;
                 }
-                ProcessCommand(
-                    std::string(buffer));
-            }
-            if (received == SOCKET_ERROR)
-            {
-                const int error =
-                WSAGetLastError();
-                if (error != WSAETIMEDOUT &&
-                    error != WSAEINTR &&
-                    g_running)
+                if (timedOut)
                 {
-                    Logf(
-                        "recvfrom() failed: %d",
-                        error);
-                }
-            }
-            bool timedOut = false;
-            {
-                std::lock_guard<std::mutex> lock(
-                    g_stateMutex);
-                const auto now =
-                std::chrono::steady_clock::now();
-                const auto elapsed =
-                std::chrono::duration_cast<
-                std::chrono::milliseconds>(
-                    now -
-                    g_state.lastCommand);
-                timedOut =
-                elapsed.count() >
-                COMMAND_TIMEOUT_MS;
-            }
-            if (timedOut)
-            {
-                bool springPersistent = false;
-                {
-                    std::lock_guard<std::mutex> lock(
-                        g_stateMutex);
-                    springPersistent =
-                    g_state.springPersistent;
-                }
-                if (!springPersistent)
-                {
-                    StopSpring();
+                    bool springPersistent = false;
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            g_stateMutex);
+                        springPersistent =
+                        g_state.springPersistent;
+                    }
+                    if (!springPersistent)
+                    {
+                        StopSpring();
+                    }
                 }
             }
         }
-    }
 // -------------------------------------------------------------------------
 // UDP startup
 // -------------------------------------------------------------------------
-    bool StartUdpServer()
-    {
-        WSADATA wsaData{};
-        const int result =
-        WSAStartup(
-            MAKEWORD(2, 2),
-            &wsaData);
-        if (result != 0)
+        bool StartUdpServer()
         {
-            Logf(
-                "WSAStartup failed: %d",
-                result);
-            return false;
-        }
-        g_socket =
-        socket(
-            AF_INET,
-            SOCK_DGRAM,
-            IPPROTO_UDP);
-        if (g_socket ==
-            INVALID_SOCKET)
-        {
-            Logf(
-                "socket() failed: %d",
-                WSAGetLastError());
-            WSACleanup();
-            return false;
-        }
-        DWORD receiveTimeout =
-        SOCKET_TIMEOUT_MS;
-        setsockopt(
-            g_socket,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            reinterpret_cast<const char*>(
-                &receiveTimeout),
-            sizeof(receiveTimeout));
-        sockaddr_in address{};
-        address.sin_family =
-        AF_INET;
-        address.sin_port =
-        htons(
-            static_cast<u_short>(
-                UDP_PORT));
-        inet_pton(
-            AF_INET,
-            "127.0.0.1",
-            &address.sin_addr);
-        if (bind(
-            g_socket,
-            reinterpret_cast<sockaddr*>(
-                &address),
-            sizeof(address)) != 0)
-        {
-            Logf(
-                "bind() failed: %d",
-                WSAGetLastError());
-            closesocket(
-                g_socket);
+            WSADATA wsaData{};
+            const int result =
+            WSAStartup(
+                MAKEWORD(2, 2),
+                &wsaData);
+            if (result != 0)
+            {
+                Logf(
+                    "WSAStartup failed: %d",
+                    result);
+                return false;
+            }
             g_socket =
-            INVALID_SOCKET;
-            WSACleanup();
-            return false;
+            socket(
+                AF_INET,
+                SOCK_DGRAM,
+                IPPROTO_UDP);
+            if (g_socket ==
+                INVALID_SOCKET)
+            {
+                Logf(
+                    "socket() failed: %d",
+                    WSAGetLastError());
+                WSACleanup();
+                return false;
+            }
+            DWORD receiveTimeout =
+            SOCKET_TIMEOUT_MS;
+            setsockopt(
+                g_socket,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                reinterpret_cast<const char*>(
+                    &receiveTimeout),
+                sizeof(receiveTimeout));
+            sockaddr_in address{};
+            address.sin_family =
+            AF_INET;
+            address.sin_port =
+            htons(
+                static_cast<u_short>(
+                    UDP_PORT));
+            inet_pton(
+                AF_INET,
+                "127.0.0.1",
+                &address.sin_addr);
+            if (bind(
+                g_socket,
+                reinterpret_cast<sockaddr*>(
+                    &address),
+                sizeof(address)) != 0)
+            {
+                Logf(
+                    "bind() failed: %d",
+                    WSAGetLastError());
+                closesocket(
+                    g_socket);
+                g_socket =
+                INVALID_SOCKET;
+                WSACleanup();
+                return false;
+            }
+            Logf(
+                "UDP server listening on 127.0.0.1:%d.",
+                UDP_PORT);
+            g_running =
+            true;
+            g_networkThread =
+            std::thread(
+                NetworkThread);
+            return true;
         }
-        Logf(
-            "UDP server listening on 127.0.0.1:%d.",
-            UDP_PORT);
-        g_running =
-        true;
-        g_networkThread =
-        std::thread(
-            NetworkThread);
-        return true;
-    }
 // -------------------------------------------------------------------------
 // UDP shutdown
 // -------------------------------------------------------------------------
-    void StopUdpServer()
-    {
-        g_running =
-        false;
-        if (g_socket !=
-            INVALID_SOCKET)
+        void StopUdpServer()
         {
-            closesocket(
-                g_socket);
-            g_socket =
-            INVALID_SOCKET;
+            g_running =
+            false;
+            if (g_socket !=
+                INVALID_SOCKET)
+            {
+                closesocket(
+                    g_socket);
+                g_socket =
+                INVALID_SOCKET;
+            }
+            if (g_networkThread.joinable())
+            {
+                g_networkThread.join();
+            }
+            WSACleanup();
         }
-        if (g_networkThread.joinable())
-        {
-            g_networkThread.join();
-        }
-        WSACleanup();
-    }
 // -----------------------------------------------------------------------------
 // Send a UDP command to the local MultiFFBJoy command socket
 // -----------------------------------------------------------------------------
-    void SendUdpCommand(
-        const char* command)
-    {
-        if (g_socket == INVALID_SOCKET ||
-            command == nullptr)
+        void SendUdpCommand(
+            const char* command)
         {
-            return;
+            if (g_socket == INVALID_SOCKET ||
+                command == nullptr)
+            {
+                return;
+            }
+            sockaddr_in destination{};
+            destination.sin_family =
+            AF_INET;
+            destination.sin_port =
+            htons(
+                static_cast<u_short>(
+                    UDP_PORT));
+            inet_pton(
+                AF_INET,
+                "127.0.0.1",
+                &destination.sin_addr);
+            const int length =
+            static_cast<int>(
+                strlen(command));
+            const int sent =
+            sendto(
+                g_socket,
+                command,
+                length,
+                0,
+                reinterpret_cast<
+                const sockaddr*>(
+                    &destination),
+                sizeof(destination));
+            if (sent == SOCKET_ERROR)
+            {
+                Logf(
+                    "TX failed: %d",
+                    WSAGetLastError());
+            }
+            else
+            {
+                Logf(
+                    "TX: %s",
+                    command);
+            }
         }
-        sockaddr_in destination{};
-        destination.sin_family =
-        AF_INET;
-        destination.sin_port =
-        htons(
-            static_cast<u_short>(
-                UDP_PORT));
-        inet_pton(
-            AF_INET,
-            "127.0.0.1",
-            &destination.sin_addr);
-        const int length =
-        static_cast<int>(
-            strlen(command));
-        const int sent =
-        sendto(
-            g_socket,
-            command,
-            length,
-            0,
-            reinterpret_cast<
-            const sockaddr*>(
-                &destination),
-            sizeof(destination));
-        if (sent == SOCKET_ERROR)
-        {
-            Logf(
-                "TX failed: %d",
-                WSAGetLastError());
-        }
-        else
-        {
-            Logf(
-                "TX: %s",
-                command);
-        }
-    }
 // -------------------------------------------------------------------------
 // Win32 window procedure
 // -------------------------------------------------------------------------
-    LRESULT CALLBACK WindowProcedure(
-        HWND window,
-        UINT messageId,
-        WPARAM wParam,
-        LPARAM lParam)
-    {
-        switch (messageId)
+        LRESULT CALLBACK WindowProcedure(
+            HWND window,
+            UINT messageId,
+            WPARAM wParam,
+            LPARAM lParam)
         {
-        case WM_CREATE:
+            switch (messageId)
             {
-                g_statusWindow =
-                CreateWindowW(
-                    L"STATIC",
-                    L"",
-                    WS_CHILD |
-                    WS_VISIBLE,
-                    12,
-                    12,
-                    700,
-                    210,
-                    window,
-                    nullptr,
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                g_logWindow =
-                CreateWindowExW(
-                    WS_EX_CLIENTEDGE,
-                    L"EDIT",
-                    L"",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    ES_MULTILINE |
-                    ES_READONLY |
-                    ES_AUTOVSCROLL |
-                    WS_VSCROLL,
-                    12,
-                    230,
-                    700,
-                    180,
-                    window,
-                    nullptr,
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"BUTTON",
-                    L"UP",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    BS_PUSHBUTTON,
-                    120,
-                    430,
-                    80,
-                    30,
-                    window,
-                    reinterpret_cast<HMENU>(
-                        IDC_FFB_UP),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"BUTTON",
-                    L"LEFT",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    BS_PUSHBUTTON,
-                    30,
-                    465,
-                    80,
-                    30,
-                    window,
-                    reinterpret_cast<HMENU>(
-                        IDC_FFB_LEFT),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"BUTTON",
-                    L"STOP",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    BS_PUSHBUTTON,
-                    120,
-                    465,
-                    80,
-                    30,
-                    window,
-                    reinterpret_cast<HMENU>(
-                        IDC_FFB_STOP),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"BUTTON",
-                    L"CENTER",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    BS_PUSHBUTTON,
-                    300,
-                    465,
-                    90,
-                    30,
-                    window,
-                    reinterpret_cast<HMENU>(
-                        IDC_FFB_CENTER),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"BUTTON",
-                    L"RIGHT",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    BS_PUSHBUTTON,
-                    210,
-                    465,
-                    80,
-                    30,
-                    window,
-                    reinterpret_cast<HMENU>(
-                        IDC_FFB_RIGHT),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"BUTTON",
-                    L"DOWN",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    BS_PUSHBUTTON,
-                    120,
-                    500,
-                    80,
-                    30,
-                    window,
-                    reinterpret_cast<HMENU>(
-                        IDC_FFB_DOWN),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                UpdateStatus();
-                return 0;
-            }
-        case WM_SIZE:
-            {
-                const int width =
-                LOWORD(lParam);
-                const int height =
-                HIWORD(lParam);
-                if (g_statusWindow != nullptr)
+            case WM_CREATE:
                 {
-                    MoveWindow(
-                        g_statusWindow,
+                    g_statusWindow =
+                    CreateWindowW(
+                        L"STATIC",
+                        L"",
+                        WS_CHILD |
+                        WS_VISIBLE,
                         12,
                         12,
-                        std::max(
-                            100,
-                            width - 24),
+                        700,
                         210,
-                        TRUE);
-                }
-                if (g_logWindow != nullptr)
-                {
-                    MoveWindow(
-                        g_logWindow,
+                        window,
+                        nullptr,
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    g_logWindow =
+                    CreateWindowExW(
+                        WS_EX_CLIENTEDGE,
+                        L"EDIT",
+                        L"",
+                        WS_CHILD |
+                        WS_VISIBLE |
+                        ES_MULTILINE |
+                        ES_READONLY |
+                        ES_AUTOVSCROLL |
+                        WS_VSCROLL,
                         12,
                         230,
-                        std::max(
-                            100,
-                            width - 24),
-                        std::max(
-                            100,
-                            height - 360),
-                        TRUE);
+                        700,
+                        180,
+                        window,
+                        nullptr,
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    CreateWindowExW(
+                        0,
+                        L"BUTTON",
+                        L"UP",
+                        WS_CHILD |
+                        WS_VISIBLE |
+                        BS_PUSHBUTTON,
+                        120,
+                        430,
+                        80,
+                        30,
+                        window,
+                        reinterpret_cast<HMENU>(
+                            IDC_FFB_UP),
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    CreateWindowExW(
+                        0,
+                        L"BUTTON",
+                        L"LEFT",
+                        WS_CHILD |
+                        WS_VISIBLE |
+                        BS_PUSHBUTTON,
+                        30,
+                        465,
+                        80,
+                        30,
+                        window,
+                        reinterpret_cast<HMENU>(
+                            IDC_FFB_LEFT),
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    CreateWindowExW(
+                        0,
+                        L"BUTTON",
+                        L"STOP",
+                        WS_CHILD |
+                        WS_VISIBLE |
+                        BS_PUSHBUTTON,
+                        120,
+                        465,
+                        80,
+                        30,
+                        window,
+                        reinterpret_cast<HMENU>(
+                            IDC_FFB_STOP),
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    CreateWindowExW(
+                        0,
+                        L"BUTTON",
+                        L"CENTER",
+                        WS_CHILD |
+                        WS_VISIBLE |
+                        BS_PUSHBUTTON,
+                        300,
+                        465,
+                        90,
+                        30,
+                        window,
+                        reinterpret_cast<HMENU>(
+                            IDC_FFB_CENTER),
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    CreateWindowExW(
+                        0,
+                        L"BUTTON",
+                        L"RIGHT",
+                        WS_CHILD |
+                        WS_VISIBLE |
+                        BS_PUSHBUTTON,
+                        210,
+                        465,
+                        80,
+                        30,
+                        window,
+                        reinterpret_cast<HMENU>(
+                            IDC_FFB_RIGHT),
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    CreateWindowExW(
+                        0,
+                        L"BUTTON",
+                        L"DOWN",
+                        WS_CHILD |
+                        WS_VISIBLE |
+                        BS_PUSHBUTTON,
+                        120,
+                        500,
+                        80,
+                        30,
+                        window,
+                        reinterpret_cast<HMENU>(
+                            IDC_FFB_DOWN),
+                        GetModuleHandleW(nullptr),
+                        nullptr);
+                    UpdateStatus();
+                    return 0;
                 }
-                return 0;
-            }
-        case WM_COMMAND:
-            {
-                if (HIWORD(wParam) != BN_CLICKED)
+            case WM_SIZE:
                 {
-                    break;
+                    const int width =
+                    LOWORD(lParam);
+                    const int height =
+                    HIWORD(lParam);
+                    if (g_statusWindow != nullptr)
+                    {
+                        MoveWindow(
+                            g_statusWindow,
+                            12,
+                            12,
+                            std::max(
+                                100,
+                                width - 24),
+                            210,
+                            TRUE);
+                    }
+                    if (g_logWindow != nullptr)
+                    {
+                        MoveWindow(
+                            g_logWindow,
+                            12,
+                            230,
+                            std::max(
+                                100,
+                                width - 24),
+                            std::max(
+                                100,
+                                height - 360),
+                            TRUE);
+                    }
+                    return 0;
                 }
-                const int controlId =
-                LOWORD(wParam);
-                switch (controlId)
+            case WM_COMMAND:
                 {
-                case IDC_FFB_UP:
+                    if (HIWORD(wParam) != BN_CLICKED)
+                    {
+                        break;
+                    }
+                    const int controlId =
+                    LOWORD(wParam);
+                    switch (controlId)
+                    {
+                    case IDC_FFB_UP:
         /*
          * DirectInput Y direction is inverted relative
          * to the physical/UI convention we're using.
          */
-                    Log(
-                        "TX: TEST_FFB 0 10000");
-                    SendUdpCommand(
-                        "TEST_FFB 0 10000");
-                    return 0;
-                case IDC_FFB_DOWN:
-                    Log(
-                        "TX: TEST_FFB 0 -10000");
-                    SendUdpCommand(
-                        "TEST_FFB 0 -10000");
-                    return 0;
-                case IDC_FFB_LEFT:
-                    Log(
-                        "TX: TEST_FFB 10000 0");
-                    SendUdpCommand(
-                        "TEST_FFB 10000 0");
-                    return 0;
-                case IDC_FFB_RIGHT:
-                    Log(
-                        "TX: TEST_FFB -10000 0");
-                    SendUdpCommand(
-                        "TEST_FFB -10000 0");
-                    return 0;
-                case IDC_FFB_STOP:
-                    Log(
-                        "TX: TEST_FFB 0 0");
-                    SendUdpCommand(
-                        "TEST_FFB 0 0");
-                    return 0;
-                case IDC_FFB_CENTER:
-                    Log(
-                        "TX: CENTER");
-                    SendUdpCommand(
-                        "CENTER");
-                    return 0;
-                default:
+                        Log(
+                            "TX: TEST_FFB 0 10000");
+                        SendUdpCommand(
+                            "TEST_FFB 0 10000");
+                        return 0;
+                    case IDC_FFB_DOWN:
+                        Log(
+                            "TX: TEST_FFB 0 -10000");
+                        SendUdpCommand(
+                            "TEST_FFB 0 -10000");
+                        return 0;
+                    case IDC_FFB_LEFT:
+                        Log(
+                            "TX: TEST_FFB 10000 0");
+                        SendUdpCommand(
+                            "TEST_FFB 10000 0");
+                        return 0;
+                    case IDC_FFB_RIGHT:
+                        Log(
+                            "TX: TEST_FFB -10000 0");
+                        SendUdpCommand(
+                            "TEST_FFB -10000 0");
+                        return 0;
+                    case IDC_FFB_STOP:
+                        Log(
+                            "TX: TEST_FFB 0 0");
+                        SendUdpCommand(
+                            "TEST_FFB 0 0");
+                        return 0;
+                    case IDC_FFB_CENTER:
+                        Log(
+                            "TX: CENTER");
+                        SendUdpCommand(
+                            "CENTER");
+                        return 0;
+                    default:
+                        break;
+                    }
                     break;
                 }
+            case WM_APP_LOG:
+                {
+                    auto* logMessage =
+                    reinterpret_cast<
+                    std::wstring*>(
+                        lParam);
+                    if (logMessage != nullptr)
+                    {
+                        if (g_logWindow != nullptr)
+                        {
+                            const int length =
+                            GetWindowTextLengthW(
+                                g_logWindow);
+                            SendMessageW(
+                                g_logWindow,
+                                EM_SETSEL,
+                                length,
+                                length);
+                            const std::wstring line =
+                            *logMessage +
+                            L"\r\n";
+                            SendMessageW(
+                                g_logWindow,
+                                EM_REPLACESEL,
+                                FALSE,
+                                reinterpret_cast<LPARAM>(
+                                    line.c_str()));
+                            SendMessageW(
+                                g_logWindow,
+                                EM_SCROLL,
+                                SB_BOTTOM,
+                                0);
+                        }
+                        delete logMessage;
+                    }
+                    return 0;
+                }
+            case WM_DESTROY:
+                {
+                    PostQuitMessage(0);
+                    return 0;
+                }
+            default:
                 break;
             }
-        case WM_APP_LOG:
-            {
-                auto* logMessage =
-                reinterpret_cast<
-                std::wstring*>(
-                    lParam);
-                if (logMessage != nullptr)
-                {
-                    if (g_logWindow != nullptr)
-                    {
-                        const int length =
-                        GetWindowTextLengthW(
-                            g_logWindow);
-                        SendMessageW(
-                            g_logWindow,
-                            EM_SETSEL,
-                            length,
-                            length);
-                        const std::wstring line =
-                        *logMessage +
-                        L"\r\n";
-                        SendMessageW(
-                            g_logWindow,
-                            EM_REPLACESEL,
-                            FALSE,
-                            reinterpret_cast<LPARAM>(
-                                line.c_str()));
-                        SendMessageW(
-                            g_logWindow,
-                            EM_SCROLL,
-                            SB_BOTTOM,
-                            0);
-                    }
-                    delete logMessage;
-                }
-                return 0;
-            }
-        case WM_DESTROY:
-            {
-                PostQuitMessage(0);
-                return 0;
-            }
-        default:
-            break;
+            return DefWindowProcW(
+                window,
+                messageId,
+                wParam,
+                lParam);
         }
-        return DefWindowProcW(
-            window,
-            messageId,
-            wParam,
-            lParam);
     }
-}
 // -----------------------------------------------------------------------------
 // Entry point
 // -----------------------------------------------------------------------------
-int APIENTRY wWinMain(
-    HINSTANCE instance,
-    HINSTANCE,
-    LPWSTR,
-    int showCommand)
-{
-    WNDCLASSW windowClass{};
-    windowClass.hInstance =
-    instance;
-    windowClass.lpfnWndProc =
-    WindowProcedure;
-    windowClass.lpszClassName =
-    L"MultiFFBJoyWindow";
-    windowClass.hCursor =
-    LoadCursorW(
-        nullptr,
-        IDC_ARROW);
-    windowClass.hbrBackground =
-    reinterpret_cast<HBRUSH>(
-        COLOR_WINDOW + 1);
-    if (!RegisterClassW(
-        &windowClass))
+    int APIENTRY wWinMain(
+        HINSTANCE instance,
+        HINSTANCE,
+        LPWSTR,
+        int showCommand)
     {
-        return 1;
-    }
-    g_mainWindow =
-    CreateWindowW(
-        windowClass.lpszClassName,
-        L"MultiFFBJoy - DirectInput FFB Bridge",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        760,
-        560,
-        nullptr,
-        nullptr,
-        instance,
-        nullptr);
-    if (g_mainWindow == nullptr)
-    {
-        return 1;
-    }
-    ShowWindow(
-        g_mainWindow,
-        showCommand);
-    UpdateWindow(
-        g_mainWindow);
-    Log(
-        "MultiFFBJoy starting.");
-    HRESULT hr =
-    DirectInput8Create(
-        instance,
-        DIRECTINPUT_VERSION,
-        IID_IDirectInput8W,
-        reinterpret_cast<void**>(
-            &g_directInput),
-        nullptr);
-    if (FAILED(hr))
-    {
-        Logf(
-            "DirectInput8Create failed: "
-            "0x%08lX",
-            static_cast<unsigned long>(hr));
-    }
-    else
-    {
-        SelectFirstSuitableDevice();
-    }
-    if (!StartUdpServer())
-    {
+        WNDCLASSW windowClass{};
+        windowClass.hInstance =
+        instance;
+        windowClass.lpfnWndProc =
+        WindowProcedure;
+        windowClass.lpszClassName =
+        L"MultiFFBJoyWindow";
+        windowClass.hCursor =
+        LoadCursorW(
+            nullptr,
+            IDC_ARROW);
+        windowClass.hbrBackground =
+        reinterpret_cast<HBRUSH>(
+            COLOR_WINDOW + 1);
+        if (!RegisterClassW(
+            &windowClass))
+        {
+            return 1;
+        }
+        g_mainWindow =
+        CreateWindowW(
+            windowClass.lpszClassName,
+            L"MultiFFBJoy - DirectInput FFB Bridge",
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            760,
+            560,
+            nullptr,
+            nullptr,
+            instance,
+            nullptr);
+        if (g_mainWindow == nullptr)
+        {
+            return 1;
+        }
+        ShowWindow(
+            g_mainWindow,
+            showCommand);
+        UpdateWindow(
+            g_mainWindow);
         Log(
-            "UDP server could not be started.");
+            "MultiFFBJoy starting.");
+        HRESULT hr =
+        DirectInput8Create(
+            instance,
+            DIRECTINPUT_VERSION,
+            IID_IDirectInput8W,
+            reinterpret_cast<void**>(
+                &g_directInput),
+            nullptr);
+        if (FAILED(hr))
+        {
+            Logf(
+                "DirectInput8Create failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+        }
+        else
+        {
+            SelectFirstSuitableDevice();
+        }
+        if (!StartUdpServer())
+        {
+            Log(
+                "UDP server could not be started.");
+        }
+        MSG winMessage{};
+        while (GetMessageW(
+            &winMessage,
+            nullptr,
+            0,
+            0) > 0)
+        {
+            TranslateMessage(
+                &winMessage);
+            DispatchMessageW(
+                &winMessage);
+        }
+        StopUdpServer();
+        StopSpring();
+        ReleaseFFBDevice();
+        if (g_directInput != nullptr)
+        {
+            g_directInput->Release();
+            g_directInput =
+            nullptr;
+        }
+        return 0;
     }
-    MSG winMessage{};
-    while (GetMessageW(
-        &winMessage,
-        nullptr,
-        0,
-        0) > 0)
-    {
-        TranslateMessage(
-            &winMessage);
-        DispatchMessageW(
-            &winMessage);
-    }
-    StopUdpServer();
-    StopSpring();
-    ReleaseFFBDevice();
-    if (g_directInput != nullptr)
-    {
-        g_directInput->Release();
-        g_directInput =
-        nullptr;
-    }
-    return 0;
-}
