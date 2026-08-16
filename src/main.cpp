@@ -817,7 +817,7 @@ namespace
         effect.cAxes =
             2;
 
-        DWORD axes[2] =`
+        DWORD axes[2] =
         {
             DIJOFS_X,
             DIJOFS_Y
