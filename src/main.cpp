@@ -35,6 +35,7 @@ namespace
     IDirectInput8W* g_directInput = nullptr;
     IDirectInputDevice8W* g_ffbDevice = nullptr;
     IDirectInputEffect* g_springEffect = nullptr;
+    IDirectInputEffect* g_testConstantEffect = nullptr;
 
     SOCKET g_socket = INVALID_SOCKET;
 
@@ -558,6 +559,27 @@ namespace
         UpdateStatus();
     }
 
+    void StopTestConstantForce()
+    {
+        if (g_testConstantEffect == nullptr)
+            return;
+
+        HRESULT hr =
+            g_testConstantEffect->Stop();
+
+        if (FAILED(hr))
+        {
+            Logf(
+                "ConstantForce Stop failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+
+            return;
+        }
+
+        Log(
+            "Constant force stopped.");
+    }
 
     // -------------------------------------------------------------------------
     // Release FFB device
@@ -646,49 +668,207 @@ namespace
     // Create spring effect
     // -------------------------------------------------------------------------
 
-    bool CreateSpringEffect()
+    bool CreateTestConstantForceEffect()
     {
         if (g_ffbDevice == nullptr)
             return false;
 
-        Log(
-            "Testing minimal GUID_Spring creation...");
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
 
-        /*
-         * Important diagnostic step:
-         *
-         * Microsoft documents that CreateEffect() permits
-         * lpeff == NULL. In that case DirectInput creates
-         * the effect object without parameters, and the
-         * application subsequently initializes it with
-         * IDirectInputEffect::SetParameters().
-         *
-         * This deliberately avoids making any assumptions
-         * about the SideWinder driver's required DIEFFECT
-         * parameters.
-         */
+        LONG direction[2] =
+        {
+            0,
+            0
+        };
+
+        DICONSTANTFORCE constantForce;
+        ZeroMemory(
+            &constantForce,
+            sizeof(constantForce));
+
+        constantForce.lMagnitude = 0;
+
+        DIEFFECT effect;
+        ZeroMemory(
+            &effect,
+            sizeof(effect));
+
+        effect.dwSize =
+            sizeof(DIEFFECT);
+
+        effect.dwFlags =
+            DIEFF_CARTESIAN |
+            DIEFF_OBJECTOFFSETS;
+
+        effect.dwDuration =
+            INFINITE;
+
+        effect.dwSamplePeriod =
+            0;
+
+        effect.dwGain =
+            DI_FFNOMINALMAX;
+
+        effect.dwTriggerButton =
+            DIEB_NOTRIGGER;
+
+        effect.dwTriggerRepeatInterval =
+            0;
+
+        effect.cAxes =
+            2;
+
+        effect.rgdwAxes =
+            axes;
+
+        effect.rglDirection =
+            direction;
+
+        effect.lpEnvelope =
+            nullptr;
+
+        effect.cbTypeSpecificParams =
+            sizeof(DICONSTANTFORCE);
+
+        effect.lpvTypeSpecificParams =
+            &constantForce;
+
         HRESULT hr =
             g_ffbDevice->CreateEffect(
-                GUID_Spring,
-                nullptr,
-                &g_springEffect,
+                GUID_ConstantForce,
+                &effect,
+                &g_testConstantEffect,
                 nullptr);
 
         if (FAILED(hr))
         {
             Logf(
-                "Minimal CreateEffect(GUID_Spring) failed: "
+                "CreateEffect(GUID_ConstantForce) failed: "
                 "0x%08lX",
                 static_cast<unsigned long>(hr));
 
-            g_springEffect =
+            g_testConstantEffect =
                 nullptr;
 
             return false;
         }
 
         Log(
-            "Minimal GUID_Spring effect created successfully.");
+            "Constant-force test effect created.");
+
+        return true;
+    }
+
+    bool SetTestConstantForce(
+        LONG x,
+        LONG y)
+    {
+        if (g_testConstantEffect == nullptr)
+            return false;
+
+        DICONSTANTFORCE constantForce;
+        ZeroMemory(
+            &constantForce,
+            sizeof(constantForce));
+
+        /*
+         * The magnitude is kept at nominal maximum and
+         * the vector is represented by the direction.
+         *
+         * x/y are expected in the range -10000..10000.
+         */
+        LONG direction[2] =
+        {
+            x,
+            y
+        };
+
+        LONG magnitude =
+            static_cast<LONG>(
+                std::sqrt(
+                    static_cast<double>(x) * x +
+                    static_cast<double>(y) * y));
+
+        if (magnitude > DI_FFNOMINALMAX)
+            magnitude = DI_FFNOMINALMAX;
+
+        if (magnitude < 0)
+            magnitude = 0;
+
+        constantForce.lMagnitude =
+            magnitude;
+
+        DIEFFECT effect;
+        ZeroMemory(
+            &effect,
+            sizeof(effect));
+
+        effect.dwSize =
+            sizeof(DIEFFECT);
+
+        effect.dwFlags =
+            DIEFF_CARTESIAN |
+            DIEFF_OBJECTOFFSETS;
+
+        effect.cAxes =
+            2;
+
+        effect.rgdwAxes =
+            (DWORD[])
+            {
+                DIJOFS_X,
+                DIJOFS_Y
+            };
+
+        effect.rglDirection =
+            direction;
+
+        effect.cbTypeSpecificParams =
+            sizeof(DICONSTANTFORCE);
+
+        effect.lpvTypeSpecificParams =
+            &constantForce;
+
+        HRESULT hr =
+            g_testConstantEffect->SetParameters(
+                &effect,
+                DIEP_DIRECTION |
+                DIEP_TYPESPECIFICPARAMS);
+
+        if (FAILED(hr))
+        {
+            Logf(
+                "SetParameters(ConstantForce) failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+
+            return false;
+        }
+
+        hr =
+            g_testConstantEffect->Start(
+                1,
+                0);
+
+        if (FAILED(hr))
+        {
+            Logf(
+                "ConstantForce Start failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+
+            return false;
+        }
+
+        Logf(
+            "Constant force applied: X=%ld Y=%ld magnitude=%ld",
+            x,
+            y,
+            magnitude);
 
         return true;
     }
@@ -836,6 +1016,47 @@ namespace
                 device->Release();
 
                 continue;
+            }
+
+
+            // DirectInput recommends disabling hardware autocenter before
+            // playing force-feedback effects. This must be done while the
+            // device is not acquired.
+            DIPROPDWORD autoCenter;
+            ZeroMemory(&autoCenter, sizeof(autoCenter));
+
+            autoCenter.diph.dwSize =
+                sizeof(DIPROPDWORD);
+
+            autoCenter.diph.dwHeaderSize =
+                sizeof(DIPROPHEADER);
+
+            autoCenter.diph.dwObj =
+                0;
+
+            autoCenter.diph.dwHow =
+                DIPH_DEVICE;
+
+            autoCenter.dwData =
+                DIPROPAUTOCENTER_OFF;
+
+            HRESULT autoCenterHr =
+                device->SetProperty(
+                    DIPROP_AUTOCENTER,
+                    &autoCenter.diph);
+
+            if (FAILED(autoCenterHr))
+            {
+                Logf(
+                    "Warning: could not disable hardware auto-center "
+                    "before acquire: 0x%08lX",
+                    static_cast<unsigned long>(
+                        autoCenterHr));
+            }
+            else
+            {
+                Log(
+                    "Hardware auto-center disabled.");
             }
 
             openResult =
@@ -1070,6 +1291,15 @@ namespace
 
             StopSpring();
 
+            /*
+             * Also stop the constant-force test effect.
+             *
+             * This makes STOP a generic "remove active FFB"
+             * command, which will be useful once BeamNG is
+             * driving the helper.
+             */
+            StopTestConstantForce();
+
             return;
         }
 
@@ -1103,6 +1333,74 @@ namespace
 
             Log(
                 "RX: malformed SPRING command.");
+
+            return;
+        }
+
+        /*
+         * TEST_FFB X Y
+         *
+         * X and Y are DirectInput force directions in the
+         * range -10000..10000.
+         *
+         * Examples:
+         *
+         *   TEST_FFB 10000 0
+         *       Force right
+         *
+         *   TEST_FFB -10000 0
+         *       Force left
+         *
+         *   TEST_FFB 0 -10000
+         *       Force up
+         *
+         *   TEST_FFB 0 10000
+         *       Force down
+         *
+         *   TEST_FFB 0 0
+         *       Stop the test force
+         */
+        if (operation == "TEST_FFB")
+        {
+            LONG x = 0;
+            LONG y = 0;
+
+            if (stream >>
+                x >>
+                y)
+            {
+                x = std::clamp<LONG>(
+                    x,
+                    -DI_FFNOMINALMAX,
+                    DI_FFNOMINALMAX);
+
+                y = std::clamp<LONG>(
+                    y,
+                    -DI_FFNOMINALMAX,
+                    DI_FFNOMINALMAX);
+
+                Logf(
+                    "RX: TEST_FFB %ld %ld",
+                    x,
+                    y);
+
+                if (x == 0 &&
+                    y == 0)
+                {
+                    StopTestConstantForce();
+                }
+                else
+                {
+                    SetTestConstantForce(
+                        x,
+                        y);
+                }
+
+                return;
+            }
+
+            Log(
+                "RX: malformed TEST_FFB command.");
 
             return;
         }
