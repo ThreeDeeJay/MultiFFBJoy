@@ -719,6 +719,84 @@ template <typename... Args>
             magnitude);
         return true;
     }
+    bool CreateSpringEffect()
+    {
+        if (g_ffbDevice == nullptr)
+            return false;
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
+        DICONDITION conditions[2]{};
+        for (int i = 0; i < 2; ++i)
+        {
+            conditions[i].lOffset =
+            0;
+            conditions[i].lPositiveCoefficient =
+            0;
+            conditions[i].lNegativeCoefficient =
+            0;
+            conditions[i].dwPositiveSaturation =
+            DI_FFNOMINALMAX;
+            conditions[i].dwNegativeSaturation =
+            DI_FFNOMINALMAX;
+            conditions[i].lDeadBand =
+            0;
+        }
+        DIEFFECT effect{};
+        effect.dwSize =
+        sizeof(DIEFFECT);
+        effect.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        effect.dwDuration =
+        INFINITE;
+        effect.dwSamplePeriod =
+        0;
+        effect.dwGain =
+        DI_FFNOMINALMAX;
+        effect.dwTriggerButton =
+        DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval =
+        0;
+        effect.cAxes =
+        2;
+        effect.rgdwAxes =
+        axes;
+        effect.rglDirection =
+        directions;
+        effect.lpEnvelope =
+        nullptr;
+        effect.cbTypeSpecificParams =
+        sizeof(conditions);
+        effect.lpvTypeSpecificParams =
+        conditions;
+        HRESULT hr =
+        g_ffbDevice->CreateEffect(
+            GUID_Spring,
+            &effect,
+            &g_springEffect,
+            nullptr);
+        if (FAILED(hr))
+        {
+            Logf(
+                "CreateEffect(GUID_Spring) failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            g_springEffect =
+            nullptr;
+            return false;
+        }
+        Log(
+            "Spring effect created.");
+        return true;
+    }
 // -------------------------------------------------------------------------
 // Select suitable FFB device
 // -------------------------------------------------------------------------
@@ -938,84 +1016,6 @@ template <typename... Args>
         Log(
             "No suitable 2-axis FFB joystick found.");
         return false;
-    }
-    bool CreateSpringEffect()
-    {
-        if (g_ffbDevice == nullptr)
-            return false;
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG directions[2] =
-        {
-            0,
-            0
-        };
-        DICONDITION conditions[2]{};
-        for (int i = 0; i < 2; ++i)
-        {
-            conditions[i].lOffset =
-            0;
-            conditions[i].lPositiveCoefficient =
-            0;
-            conditions[i].lNegativeCoefficient =
-            0;
-            conditions[i].dwPositiveSaturation =
-            DI_FFNOMINALMAX;
-            conditions[i].dwNegativeSaturation =
-            DI_FFNOMINALMAX;
-            conditions[i].lDeadBand =
-            0;
-        }
-        DIEFFECT effect{};
-        effect.dwSize =
-        sizeof(DIEFFECT);
-        effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
-        effect.dwDuration =
-        INFINITE;
-        effect.dwSamplePeriod =
-        0;
-        effect.dwGain =
-        DI_FFNOMINALMAX;
-        effect.dwTriggerButton =
-        DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval =
-        0;
-        effect.cAxes =
-        2;
-        effect.rgdwAxes =
-        axes;
-        effect.rglDirection =
-        directions;
-        effect.lpEnvelope =
-        nullptr;
-        effect.cbTypeSpecificParams =
-        sizeof(conditions);
-        effect.lpvTypeSpecificParams =
-        conditions;
-        HRESULT hr =
-        g_ffbDevice->CreateEffect(
-            GUID_Spring,
-            &effect,
-            &g_springEffect,
-            nullptr);
-        if (FAILED(hr))
-        {
-            Logf(
-                "CreateEffect(GUID_Spring) failed: "
-                "0x%08lX",
-                static_cast<unsigned long>(hr));
-            g_springEffect =
-            nullptr;
-            return false;
-        }
-        Log(
-            "Spring effect created.");
-        return true;
     }
 // -------------------------------------------------------------------------
 // Set spring strength
