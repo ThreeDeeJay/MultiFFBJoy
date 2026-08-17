@@ -504,29 +504,24 @@ template <typename... Args>
         if (g_springEffect != nullptr)
         {
             g_springEffect->Release();
-            g_springEffect =
-            nullptr;
+            g_springEffect = nullptr;
         }
-        if (g_testConstantEffect != nullptr)
+        if (g_testConstantForceEffect != nullptr)
         {
-            g_testConstantEffect->Release();
-            g_testConstantEffect =
-            nullptr;
+            g_testConstantForceEffect->Release();
+            g_testConstantForceEffect = nullptr;
         }
         if (g_ffbDevice != nullptr)
         {
             g_ffbDevice->Unacquire();
             g_ffbDevice->Release();
-            g_ffbDevice =
-            nullptr;
+            g_ffbDevice = nullptr;
         }
         {
-            std::lock_guard<std::mutex> lock(
-                g_stateMutex);
-            g_state =
-            DeviceState{};
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            g_state.acquired = false;
+            g_state.springStrength = 0.0f;
         }
-        UpdateStatus();
     }
     bool CreateSpringEffect()
     {
