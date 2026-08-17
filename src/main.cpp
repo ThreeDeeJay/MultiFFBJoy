@@ -33,6 +33,7 @@ namespace
     IDirectInput8W* g_directInput = nullptr;
     IDirectInputDevice8W* g_ffbDevice = nullptr;
     IDirectInputEffect* g_springEffect = nullptr;
+    IDirectInputEffect* g_testConstantForceEffect = nullptr;
     IDirectInputEffect* g_testConstantEffect = nullptr;
     SOCKET g_socket = INVALID_SOCKET;
     std::thread g_networkThread;
