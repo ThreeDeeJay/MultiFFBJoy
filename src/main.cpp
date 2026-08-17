@@ -527,368 +527,6 @@ template <typename... Args>
         }
         UpdateStatus();
     }
-// -------------------------------------------------------------------------
-// Force a complete FFB device re-acquisition.
-//
-// BeamNG can temporarily take the DirectInput device exclusively.  Merely
-// calling Acquire() on our existing interface is not sufficient in that
-// situation because the existing effect objects may also belong to the old
-// acquisition state.
-//
-// This function therefore:
-//   1. remembers the persistent spring state
-//   2. stops/releases all effects
-//   3. releases the DirectInput device
-//   4. waits briefly
-//   5. enumerates and opens the device again
-//   6. waits for exclusive ownership to become usable
-//   7. restores the persistent spring
-// -------------------------------------------------------------------------
-    bool ReacquireFFBDevice()
-    {
-        float previousSpringStrength = 0.0f;
-        bool restoreSpring = false;
-        {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
-            previousSpringStrength =
-            g_state.springStrength;
-            restoreSpring =
-            g_state.springPersistent;
-        }
-        Log("Re-acquiring FFB device...");
-        StopSpring();
-        StopTestConstantForce();
-        ReleaseFFBDevice();
-    // Give BeamNG / DirectInput a moment to release the old interface.
-        Sleep(100);
-        constexpr int MAX_ATTEMPTS = 20;
-        constexpr DWORD RETRY_DELAY_MS = 100;
-        for (int attempt = 1;
-           attempt <= MAX_ATTEMPTS && g_running;
-           ++attempt)
-        {
-            Logf(
-                "FFB acquisition attempt %d/%d.",
-                attempt,
-                MAX_ATTEMPTS);
-            if (!SelectFirstSuitableDevice())
-            {
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-        // SelectFirstSuitableDevice() creates the effects and acquires
-        // the device.  Before attempting to download the spring, verify
-        // that DirectInput currently considers the device exclusively
-        // acquired.
-            if (g_ffbDevice == nullptr)
-            {
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-            HRESULT hr =
-            g_ffbDevice->Acquire();
-            if (FAILED(hr) &&
-                hr != DIERR_OTHERAPPHASPRIO)
-            {
-                Logf(
-                    "FFB Acquire() verification failed: 0x%08lX",
-                    static_cast<unsigned long>(hr));
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-        // If BeamNG currently owns the device, wait and retry rather than
-        // immediately trying SetParameters(), which produces
-        // DIERR_NOTEXCLUSIVEACQUIRED (0x80040205).
-            bool usable = false;
-            for (int waitAttempt = 0;
-               waitAttempt < 10 && g_running;
-               ++waitAttempt)
-            {
-                DIJOYSTATE2 state{};
-                hr =
-                g_ffbDevice->GetDeviceState(
-                    sizeof(DIJOYSTATE2),
-                    &state);
-                if (SUCCEEDED(hr))
-                {
-                    usable = true;
-                    break;
-                }
-                Logf(
-                    "FFB device not yet usable: 0x%08lX",
-                    static_cast<unsigned long>(hr));
-                if (hr == DIERR_INPUTLOST ||
-                    hr == DIERR_NOTACQUIRED)
-                {
-                    hr =
-                    g_ffbDevice->Acquire();
-                    if (FAILED(hr))
-                    {
-                        Logf(
-                            "Acquire retry failed: 0x%08lX",
-                            static_cast<unsigned long>(hr));
-                    }
-                }
-                Sleep(50);
-            }
-            if (!usable)
-            {
-                Log(
-                    "FFB device is not exclusively usable yet.");
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-            Log(
-                "FFB device is exclusively acquired and usable.");
-        // Recreate the spring now that exclusive ownership has been
-        // verified.  This is intentionally done after acquisition rather
-        // than assuming the effect created during enumeration is usable.
-            if (g_springEffect != nullptr)
-            {
-                g_springEffect->Release();
-                g_springEffect = nullptr;
-            }
-            if (!CreateSpringEffect())
-            {
-                Log(
-                    "Failed to recreate spring effect after acquisition.");
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-            if (g_testConstantForceEffect != nullptr)
-            {
-                g_testConstantForceEffect->Release();
-                g_testConstantForceEffect = nullptr;
-            }
-            if (!CreateTestConstantForceEffect())
-            {
-                Log(
-                    "Failed to recreate constant-force test effect.");
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-            {
-                std::lock_guard<std::mutex> lock(g_stateMutex);
-                g_state.acquired = true;
-            }
-            Log(
-                "FFB device successfully reinitialized.");
-        // Restore the persistent force only after the new device/effect
-        // has been verified.
-            if (restoreSpring)
-            {
-                Logf(
-                    "Restoring persistent spring: %.3f.",
-                    previousSpringStrength);
-                SetSpringStrength(
-                    previousSpringStrength);
-            }
-            return true;
-        }
-        Log(
-            "FFB re-acquisition failed after all attempts.");
-        return false;
-    }
-// -------------------------------------------------------------------------
-// Hardware auto-center
-// -------------------------------------------------------------------------
-    void DisableHardwareAutoCenter()
-    {
-        if (g_ffbDevice == nullptr)
-            return;
-        DIPROPDWORD property{};
-        property.diph.dwSize =
-        sizeof(property);
-        property.diph.dwHeaderSize =
-        sizeof(DIPROPHEADER);
-        property.diph.dwObj =
-        0;
-        property.diph.dwHow =
-        DIPH_DEVICE;
-        property.dwData =
-        DIPROPAUTOCENTER_OFF;
-        const HRESULT hr =
-        g_ffbDevice->SetProperty(
-            DIPROP_AUTOCENTER,
-            &property.diph);
-        if (FAILED(hr))
-        {
-            Logf(
-                "Warning: could not disable hardware "
-                "auto-center: 0x%08lX",
-                static_cast<unsigned long>(hr));
-        }
-        else
-        {
-            Log(
-                "Hardware auto-center disabled.");
-        }
-    }
-// -------------------------------------------------------------------------
-// Create spring effect
-// -------------------------------------------------------------------------
-    bool CreateTestConstantForceEffect()
-    {
-        if (g_ffbDevice == nullptr)
-            return false;
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG direction[2] =
-        {
-            0,
-            0
-        };
-        DICONSTANTFORCE constantForce;
-        ZeroMemory(
-            &constantForce,
-            sizeof(constantForce));
-        constantForce.lMagnitude = 0;
-        DIEFFECT effect;
-        ZeroMemory(
-            &effect,
-            sizeof(effect));
-        effect.dwSize =
-        sizeof(DIEFFECT);
-        effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
-        effect.dwDuration =
-        INFINITE;
-        effect.dwSamplePeriod =
-        0;
-        effect.dwGain =
-        DI_FFNOMINALMAX;
-        effect.dwTriggerButton =
-        DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval =
-        0;
-        effect.cAxes =
-        2;
-        effect.rgdwAxes =
-        axes;
-        effect.rglDirection =
-        direction;
-        effect.lpEnvelope =
-        nullptr;
-        effect.cbTypeSpecificParams =
-        sizeof(DICONSTANTFORCE);
-        effect.lpvTypeSpecificParams =
-        &constantForce;
-        HRESULT hr =
-        g_ffbDevice->CreateEffect(
-            GUID_ConstantForce,
-            &effect,
-            &g_testConstantEffect,
-            nullptr);
-        if (FAILED(hr))
-        {
-            Logf(
-                "CreateEffect(GUID_ConstantForce) failed: "
-                "0x%08lX",
-                static_cast<unsigned long>(hr));
-            g_testConstantEffect =
-            nullptr;
-            return false;
-        }
-        Log(
-            "Constant-force test effect created.");
-        return true;
-    }
-    bool SetTestConstantForce(
-        LONG x,
-        LONG y)
-    {
-        if (g_testConstantEffect == nullptr)
-            return false;
-        DICONSTANTFORCE constantForce;
-        ZeroMemory(
-            &constantForce,
-            sizeof(constantForce));
-/*
-* The magnitude is kept at nominal maximum and
-* the vector is represented by the direction.
-*
-* x/y are expected in the range -10000..10000.
-*/
-        LONG direction[2] =
-        {
-            x,
-            y
-        };
-        LONG magnitude =
-        static_cast<LONG>(
-            std::sqrt(
-                static_cast<double>(x) * x +
-                static_cast<double>(y) * y));
-        if (magnitude > DI_FFNOMINALMAX)
-            magnitude = DI_FFNOMINALMAX;
-        if (magnitude < 0)
-            magnitude = 0;
-        constantForce.lMagnitude =
-        magnitude;
-        DIEFFECT effect;
-        ZeroMemory(
-            &effect,
-            sizeof(effect));
-        effect.dwSize =
-        sizeof(DIEFFECT);
-        effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
-        effect.cAxes =
-        2;
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        effect.rgdwAxes =
-        axes;
-        effect.rglDirection =
-        direction;
-        effect.cbTypeSpecificParams =
-        sizeof(DICONSTANTFORCE);
-        effect.lpvTypeSpecificParams =
-        &constantForce;
-        HRESULT hr =
-        g_testConstantEffect->SetParameters(
-            &effect,
-            DIEP_DIRECTION |
-            DIEP_TYPESPECIFICPARAMS);
-        if (FAILED(hr))
-        {
-            Logf(
-                "SetParameters(ConstantForce) failed: "
-                "0x%08lX",
-                static_cast<unsigned long>(hr));
-            return false;
-        }
-        hr =
-        g_testConstantEffect->Start(
-            1,
-            0);
-        if (FAILED(hr))
-        {
-            Logf(
-                "ConstantForce Start failed: "
-                "0x%08lX",
-                static_cast<unsigned long>(hr));
-            return false;
-        }
-        Logf(
-            "Constant force applied: X=%ld Y=%ld magnitude=%ld",
-            x,
-            y,
-            magnitude);
-        return true;
-    }
     bool CreateSpringEffect()
     {
         if (g_ffbDevice == nullptr)
@@ -965,6 +603,79 @@ template <typename... Args>
         }
         Log(
             "Spring effect created.");
+        return true;
+    }
+// -------------------------------------------------------------------------
+// Create spring effect
+// -------------------------------------------------------------------------
+    bool CreateTestConstantForceEffect()
+    {
+        if (g_ffbDevice == nullptr)
+            return false;
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        LONG direction[2] =
+        {
+            0,
+            0
+        };
+        DICONSTANTFORCE constantForce;
+        ZeroMemory(
+            &constantForce,
+            sizeof(constantForce));
+        constantForce.lMagnitude = 0;
+        DIEFFECT effect;
+        ZeroMemory(
+            &effect,
+            sizeof(effect));
+        effect.dwSize =
+        sizeof(DIEFFECT);
+        effect.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        effect.dwDuration =
+        INFINITE;
+        effect.dwSamplePeriod =
+        0;
+        effect.dwGain =
+        DI_FFNOMINALMAX;
+        effect.dwTriggerButton =
+        DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval =
+        0;
+        effect.cAxes =
+        2;
+        effect.rgdwAxes =
+        axes;
+        effect.rglDirection =
+        direction;
+        effect.lpEnvelope =
+        nullptr;
+        effect.cbTypeSpecificParams =
+        sizeof(DICONSTANTFORCE);
+        effect.lpvTypeSpecificParams =
+        &constantForce;
+        HRESULT hr =
+        g_ffbDevice->CreateEffect(
+            GUID_ConstantForce,
+            &effect,
+            &g_testConstantEffect,
+            nullptr);
+        if (FAILED(hr))
+        {
+            Logf(
+                "CreateEffect(GUID_ConstantForce) failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            g_testConstantEffect =
+            nullptr;
+            return false;
+        }
+        Log(
+            "Constant-force test effect created.");
         return true;
     }
 // -------------------------------------------------------------------------
@@ -1268,9 +979,6 @@ template <typename... Args>
 // -------------------------------------------------------------------------
 // Set spring strength
 // -------------------------------------------------------------------------
-// -------------------------------------------------------------------------
-// Set spring strength
-// -------------------------------------------------------------------------
     bool SetSpringStrength(float strength)
     {
         strength =
@@ -1407,6 +1115,323 @@ template <typename... Args>
         Logf(
             "Spring strength set to %.3f.",
             strength);
+        return true;
+    }
+// -------------------------------------------------------------------------
+// Force a complete FFB device re-acquisition.
+//
+// BeamNG can temporarily take the DirectInput device exclusively.  Merely
+// calling Acquire() on our existing interface is not sufficient in that
+// situation because the existing effect objects may also belong to the old
+// acquisition state.
+//
+// This function therefore:
+//   1. remembers the persistent spring state
+//   2. stops/releases all effects
+//   3. releases the DirectInput device
+//   4. waits briefly
+//   5. enumerates and opens the device again
+//   6. waits for exclusive ownership to become usable
+//   7. restores the persistent spring
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// Re-acquire FFB device after BeamNG may have taken/released ownership
+// -------------------------------------------------------------------------
+    bool ReacquireFFBDevice()
+    {
+        float previousSpringStrength = 0.0f;
+        bool restoreSpring = false;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            previousSpringStrength =
+            g_state.springStrength;
+            restoreSpring =
+            g_state.springPersistent;
+        }
+        Log(
+            "Re-acquiring FFB device...");
+    // Completely tear down our existing DirectInput state first.
+        StopSpring();
+        StopTestConstantForce();
+        ReleaseFFBDevice();
+    /*
+     * Give BeamNG/directinput a short opportunity to release the
+     * device before we begin trying to take exclusive ownership.
+     */
+        Sleep(150);
+        constexpr int MAX_ATTEMPTS = 30;
+        constexpr DWORD RETRY_DELAY_MS = 100;
+        for (
+            int attempt = 1;
+            attempt <= MAX_ATTEMPTS && g_running;
+            ++attempt)
+        {
+            Logf(
+                "FFB acquisition attempt %d/%d.",
+                attempt,
+                MAX_ATTEMPTS);
+        /*
+         * Enumerate and open the candidate.
+         *
+         * SelectFirstSuitableDevice() performs:
+         *   - DirectInput enumeration
+         *   - CreateDevice()
+         *   - SetDataFormat()
+         *   - SetCooperativeLevel()
+         *   - AUTOCENTER_OFF
+         *   - Acquire()
+         *
+         * We deliberately do NOT trust that successful Acquire() means
+         * that the device is currently usable for FFB. BeamNG may still
+         * own the exclusive interface.
+         */
+            if (!SelectFirstSuitableDevice())
+            {
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            if (g_ffbDevice == nullptr)
+            {
+                Log(
+                    "Acquisition returned without an FFB device.");
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * Verify actual device access.
+         *
+         * GetDeviceState() is a useful ownership test here. If BeamNG
+         * currently owns the exclusive DirectInput interface, this will
+         * generally fail with DIERR_NOTACQUIRED / DIERR_INPUTLOST.
+         */
+            bool usable = false;
+            for (
+                int waitAttempt = 0;
+                waitAttempt < 20 && g_running;
+                ++waitAttempt)
+            {
+                DIJOYSTATE2 state{};
+                HRESULT hr =
+                g_ffbDevice->GetDeviceState(
+                    sizeof(DIJOYSTATE2),
+                    &state);
+                if (SUCCEEDED(hr))
+                {
+                    usable = true;
+                    break;
+                }
+                Logf(
+                    "FFB device not yet usable: 0x%08lX",
+                    static_cast<unsigned long>(hr));
+                if (
+                    hr == DIERR_INPUTLOST ||
+                    hr == DIERR_NOTACQUIRED)
+                {
+                    HRESULT acquireResult =
+                    g_ffbDevice->Acquire();
+                    if (SUCCEEDED(acquireResult))
+                    {
+                        Log(
+                            "FFB Acquire() retry succeeded.");
+                    }
+                    else
+                    {
+                        Logf(
+                            "Acquire retry failed: 0x%08lX",
+                            static_cast<unsigned long>(
+                                acquireResult));
+                    }
+                }
+                Sleep(50);
+            }
+            if (!usable)
+            {
+                Log(
+                    "FFB device is not exclusively usable yet.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            Log(
+                "FFB device is exclusively acquired and usable.");
+        /*
+         * SelectFirstSuitableDevice() may already have created effects.
+         *
+         * Throw those away and recreate them now, AFTER ownership has
+         * been verified. This is important because an effect created
+         * while BeamNG owns the device can subsequently become invalid.
+         */
+            if (g_springEffect != nullptr)
+            {
+                g_springEffect->Release();
+                g_springEffect = nullptr;
+            }
+            if (!CreateSpringEffect())
+            {
+                Log(
+                    "Failed to recreate spring effect after acquisition.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            if (g_testConstantForceEffect != nullptr)
+            {
+                g_testConstantForceEffect->Release();
+                g_testConstantForceEffect = nullptr;
+            }
+            if (!CreateTestConstantForceEffect())
+            {
+                Log(
+                    "Failed to recreate constant-force test effect.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_state.acquired = true;
+            }
+            Log(
+                "FFB device successfully reinitialized.");
+        /*
+         * Restore the previous persistent force only after the device
+         * and both effects have been successfully recreated.
+         */
+            if (restoreSpring)
+            {
+                Logf(
+                    "Restoring persistent spring: %.3f.",
+                    previousSpringStrength);
+                SetSpringStrength(
+                    previousSpringStrength);
+            }
+            return true;
+        }
+        Log(
+            "FFB re-acquisition failed after all attempts.");
+        return false;
+    }
+// -------------------------------------------------------------------------
+// Hardware auto-center
+// -------------------------------------------------------------------------
+    void DisableHardwareAutoCenter()
+    {
+        if (g_ffbDevice == nullptr)
+            return;
+        DIPROPDWORD property{};
+        property.diph.dwSize =
+        sizeof(property);
+        property.diph.dwHeaderSize =
+        sizeof(DIPROPHEADER);
+        property.diph.dwObj =
+        0;
+        property.diph.dwHow =
+        DIPH_DEVICE;
+        property.dwData =
+        DIPROPAUTOCENTER_OFF;
+        const HRESULT hr =
+        g_ffbDevice->SetProperty(
+            DIPROP_AUTOCENTER,
+            &property.diph);
+        if (FAILED(hr))
+        {
+            Logf(
+                "Warning: could not disable hardware "
+                "auto-center: 0x%08lX",
+                static_cast<unsigned long>(hr));
+        }
+        else
+        {
+            Log(
+                "Hardware auto-center disabled.");
+        }
+    }
+    bool SetTestConstantForce(
+        LONG x,
+        LONG y)
+    {
+        if (g_testConstantEffect == nullptr)
+            return false;
+        DICONSTANTFORCE constantForce;
+        ZeroMemory(
+            &constantForce,
+            sizeof(constantForce));
+/*
+* The magnitude is kept at nominal maximum and
+* the vector is represented by the direction.
+*
+* x/y are expected in the range -10000..10000.
+*/
+        LONG direction[2] =
+        {
+            x,
+            y
+        };
+        LONG magnitude =
+        static_cast<LONG>(
+            std::sqrt(
+                static_cast<double>(x) * x +
+                static_cast<double>(y) * y));
+        if (magnitude > DI_FFNOMINALMAX)
+            magnitude = DI_FFNOMINALMAX;
+        if (magnitude < 0)
+            magnitude = 0;
+        constantForce.lMagnitude =
+        magnitude;
+        DIEFFECT effect;
+        ZeroMemory(
+            &effect,
+            sizeof(effect));
+        effect.dwSize =
+        sizeof(DIEFFECT);
+        effect.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        effect.cAxes =
+        2;
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        effect.rgdwAxes =
+        axes;
+        effect.rglDirection =
+        direction;
+        effect.cbTypeSpecificParams =
+        sizeof(DICONSTANTFORCE);
+        effect.lpvTypeSpecificParams =
+        &constantForce;
+        HRESULT hr =
+        g_testConstantEffect->SetParameters(
+            &effect,
+            DIEP_DIRECTION |
+            DIEP_TYPESPECIFICPARAMS);
+        if (FAILED(hr))
+        {
+            Logf(
+                "SetParameters(ConstantForce) failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            return false;
+        }
+        hr =
+        g_testConstantEffect->Start(
+            1,
+            0);
+        if (FAILED(hr))
+        {
+            Logf(
+                "ConstantForce Start failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            return false;
+        }
+        Logf(
+            "Constant force applied: X=%ld Y=%ld magnitude=%ld",
+            x,
+            y,
+            magnitude);
         return true;
     }
 // --------------------------------------------------------------------

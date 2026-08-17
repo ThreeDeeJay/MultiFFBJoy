@@ -1,3 +1,5 @@
--- MultiFFBJoy startup loader
-
 loadManualUnloadExtensions()
+
+if extensions then
+  extensions.load("multiffbjoy")
+end
