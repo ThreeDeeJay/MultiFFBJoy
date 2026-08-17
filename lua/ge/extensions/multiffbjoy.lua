@@ -1,287 +1,259 @@
--- ============================================================================
--- MultiFFBJoy - BeamNG GE extension
---
--- Communicates with the MultiFFBJoy helper application over UDP.
---
--- The helper owns the DirectInput FFB device. BeamNG only tells the helper
--- what FFB state should currently be active.
---
--- Current prototype behavior:
---   * Automatically initializes when the extension loads.
---   * Synchronizes the current player vehicle immediately.
---   * Re-acquires the DirectInput FFB device whenever the player vehicle
---     changes/spawns.
---   * Applies full-strength centering after each re-acquisition.
---   * Stops FFB when there is no active player vehicle.
---
--- UDP protocol:
---   PING
---   CENTER
---   STOP
---   REACQUIRE
---   SPRING <0.0..1.0>
--- ============================================================================
 local M = {}
-local socket = nil
-local udpSocket = nil
 local UDP_HOST = "127.0.0.1"
 local UDP_PORT = 65458
+local PING_INTERVAL = 0.5
+local VEHICLE_SYNC_DELAY = 0.25
+local REACQUIRE_DELAY = 0.25
+local udp = nil
+local helperReady = false
+local waitingForHelper = true
 local currentVehicleId = nil
-local currentState = "STOP"
-local initialized = false
--- ---------------------------------------------------------------------------
--- Logging
--- ---------------------------------------------------------------------------
-local function log(message)
-  print("[MultiFFBJoy] " .. tostring(message))
+local lastVehicleId = nil
+local syncPending = false
+local syncTimer = 0
+local pingTimer = 0
+local reacquireTimer = 0
+local function log(msg)
+  print("[MultiFFBJoy] " .. msg)
 end
--- ---------------------------------------------------------------------------
--- UDP
--- ---------------------------------------------------------------------------
-local function initializeUdp()
-  if udpSocket then
-    return true
+local function closeUdp()
+  if udp then
+    pcall(function()
+      udp:close()
+    end)
+    udp = nil
   end
-  local ok, socketModule = pcall(require, "socket")
-  if not ok or not socketModule then
-    log("ERROR: LuaSocket is unavailable.")
+end
+local function initializeUdp()
+  closeUdp()
+  local ok, socket = pcall(require, "socket")
+  if not ok or not socket then
+    log("ERROR: LuaSocket unavailable.")
     return false
   end
-  socket = socketModule
   local sock, err = socket.udp()
   if not sock then
-    log("ERROR: could not create UDP socket: " .. tostring(err))
+    log("ERROR: unable to create UDP socket: " .. tostring(err))
     return false
   end
-  udpSocket = sock
-  -- We only send commands to the helper. The helper owns the listening
-  -- socket, so we do not need to bind this socket to a local port.
-  udpSocket:settimeout(0)
+  udp = sock
+  udp:settimeout(0)
+  local okBind, bindErr =
+  udp:setsockname(
+    UDP_HOST,
+    0)
+  if not okBind then
+    log(
+      "WARNING: could not bind local UDP socket: "
+      .. tostring(bindErr))
+  end
   log(
     string.format(
       "UDP initialized: %s:%d",
       UDP_HOST,
-      UDP_PORT
-      )
-    )
+      UDP_PORT))
   return true
 end
 local function sendCommand(command)
-  if not udpSocket then
-    log(
-      "UDP unavailable; cannot send command: " ..
-      tostring(command)
-      )
+  if not udp then
     return false
   end
-  local bytes, err = udpSocket:sendto(
+  local ok, err =
+  udp:sendto(
     command,
     UDP_HOST,
-    UDP_PORT
-    )
-  if not bytes then
-    log(
-      "UDP send failed for '" ..
-      tostring(command) ..
-      "': " ..
-      tostring(err)
-      )
+    UDP_PORT)
+  if not ok then
     return false
   end
-  log("TX: " .. tostring(command))
+  log("TX: " .. command)
   return true
 end
--- ---------------------------------------------------------------------------
--- FFB commands
--- ---------------------------------------------------------------------------
-local function stopFFB()
-  if sendCommand("STOP") then
-    currentState = "STOP"
-    return true
-  end
-  return false
-end
-local function centerFFB()
-  if sendCommand("CENTER") then
-    currentState = "CENTER"
-    return true
-  end
-  return false
-end
-local function setSpringStrength(strength)
-  strength = tonumber(strength) or 0
-  if strength < 0 then
-    strength = 0
-  elseif strength > 1 then
-    strength = 1
-  end
-  if sendCommand(
-    string.format("SPRING %.3f", strength)
-    ) then
-    currentState = "SPRING"
-    return true
-  end
-  return false
-end
--- ---------------------------------------------------------------------------
--- FFB device re-acquisition
---
--- This is intentionally NOT suppressed when currentState is already CENTER.
---
--- BeamNG can interact with / take ownership of the DirectInput FFB device
--- during vehicle creation and switching. Therefore every actual vehicle
--- transition must give the helper an opportunity to release and re-open the
--- FFB device and recreate its effects.
--- ---------------------------------------------------------------------------
-local function reacquireFFB()
-  log("Requesting FFB device re-acquisition.")
-  if not sendCommand("REACQUIRE") then
-    return false
-  end
-  -- The helper is now responsible for releasing/re-opening the device and
-  -- recreating its effects. Do not pretend that CENTER is already active
-  -- until we explicitly send the CENTER command below.
-  currentState = "NONE"
-  return true
-end
--- ---------------------------------------------------------------------------
--- Vehicle identification
--- ---------------------------------------------------------------------------
-local function getPlayerVehicleId()
-  local vehicleId = be:getPlayerVehicleID(0)
-  if vehicleId == nil then
-    return nil
-  end
-  -- BeamNG can represent "no vehicle" as either nil or -1 depending on the
-  -- lifecycle stage.
-  if vehicleId == -1 then
-    return nil
-  end
-  return vehicleId
-end
--- ---------------------------------------------------------------------------
--- Synchronize FFB with the current player vehicle
--- ---------------------------------------------------------------------------
-local function synchronizeVehicle()
-  local vehicleId = getPlayerVehicleId()
-  if vehicleId == currentVehicleId then
+local function receiveCommands()
+  if not udp then
     return
   end
-  local previousVehicleId = currentVehicleId
-  currentVehicleId = vehicleId
-  if vehicleId then
-    log(
-      "Player vehicle changed: " ..
-      tostring(previousVehicleId) ..
-      " -> " ..
-      tostring(vehicleId)
-      )
-    -- The vehicle transition is exactly when BeamNG may have touched the
-    -- DirectInput FFB device. Always reacquire it rather than merely sending
-    -- another CENTER command.
-    if reacquireFFB() then
-      centerFFB()
+  while true do
+    local data, ip, port =
+    udp:receivefrom()
+    if not data then
+      break
     end
-  else
-    log("No active player vehicle.")
-    stopFFB()
+    log(
+      string.format(
+        "RX: %s",
+        data))
+    if data == "PONG" then
+      if not helperReady then
+        helperReady = true
+        waitingForHelper = false
+        log("FFB helper connected.")
+        syncPending = true
+        syncTimer = REACQUIRE_DELAY
+      end
+    elseif data == "READY" then
+      helperReady = true
+      waitingForHelper = false
+      log("FFB helper ready.")
+      syncPending = true
+      syncTimer = 0.0
+    elseif data == "REACQUIRE_OK" then
+      helperReady = true
+      log("FFB helper re-acquisition successful.")
+      if currentVehicleId ~= nil then
+        sendCommand("CENTER")
+      end
+    end
   end
 end
--- ---------------------------------------------------------------------------
--- BeamNG vehicle lifecycle callbacks
--- ---------------------------------------------------------------------------
-function M.onVehicleSpawned(vehicleId)
+local function getPlayerVehicleId()
+  local playerVehicle =
+  be:getPlayerVehicle(0)
+  if not playerVehicle then
+    return nil
+  end
+  return playerVehicle:getId()
+end
+local function requestReacquire()
+  if not helperReady then
+    return
+  end
   log(
-    "Vehicle spawned: " ..
-    tostring(vehicleId)
-    )
-  -- Do not immediately send CENTER here. BeamNG's vehicle initialization may
-  -- still be in progress.
-  --
-  -- Invalidating the cached ID causes onUpdate() to perform the synchronized
-  -- REACQUIRE + CENTER once the vehicle is visible as the player vehicle.
+    "Requesting FFB device re-acquisition.")
+  sendCommand("REACQUIRE")
+  reacquireTimer =
+  REACQUIRE_DELAY
+end
+local function synchronizeVehicle()
+  if not helperReady then
+    syncPending = true
+    return
+  end
+  local vehicleId =
+  getPlayerVehicleId()
+  if vehicleId ~= currentVehicleId then
+    lastVehicleId =
+    currentVehicleId
+    currentVehicleId =
+    vehicleId
+    log(
+      string.format(
+        "Player vehicle changed: %s -> %s",
+        tostring(lastVehicleId),
+        tostring(currentVehicleId)))
+  end
+  if currentVehicleId == nil then
+    sendCommand("STOP")
+    return
+  end
+  log(
+    "Synchronizing FFB with current vehicle.")
+  requestReacquire()
+end
+local function checkVehicleChange()
+  local vehicleId =
+  getPlayerVehicleId()
+  if vehicleId ~= currentVehicleId then
+    lastVehicleId =
+    currentVehicleId
+    currentVehicleId =
+    vehicleId
+    log(
+      string.format(
+        "Vehicle changed: %s -> %s",
+        tostring(lastVehicleId),
+        tostring(currentVehicleId)))
+    syncPending = true
+    syncTimer = VEHICLE_SYNC_DELAY
+  end
+end
+function M.onExtensionLoaded()
+  log("Extension initialized.")
+  -- The startup script loads this extension before all other extensions
+  -- have necessarily settled.  Manual unload mode is therefore established
+  -- here, after the extension has actually been registered.
+  pcall(function()
+    setExtensionUnloadMode(
+      "multiffbjoy",
+      "manual")
+  end)
+  initializeUdp()
+  helperReady = false
+  waitingForHelper = true
   currentVehicleId = nil
+  lastVehicleId = nil
+  syncPending = true
+  syncTimer = 0.5
+  pingTimer = 0.0
+  reacquireTimer = 0.0
+end
+function M.onExtensionUnloaded()
+  log("Extension unloading.")
+  if udp then
+    sendCommand("STOP")
+  end
+  closeUdp()
+  helperReady = false
+  waitingForHelper = true
+end
+function M.onUpdate(dtReal, dtSim, dtRaw)
+  receiveCommands()
+  if not udp then
+    return
+  end
+  pingTimer =
+  pingTimer - dtReal
+  if pingTimer <= 0 then
+    pingTimer =
+    PING_INTERVAL
+    if not helperReady then
+      sendCommand("PING")
+    end
+  end
+  if reacquireTimer > 0 then
+    reacquireTimer =
+    reacquireTimer - dtReal
+    if reacquireTimer < 0 then
+      reacquireTimer = 0
+    end
+  end
+  if syncPending then
+    syncTimer =
+    syncTimer - dtReal
+    if syncTimer <= 0 then
+      syncPending = false
+      synchronizeVehicle()
+    end
+  end
+  checkVehicleChange()
 end
 function M.onVehicleSwitched(oldId, newId)
   log(
-    "Vehicle switched: " ..
-    tostring(oldId) ..
-    " -> " ..
-    tostring(newId)
-    )
-  -- Force the next update to synchronize the new player vehicle.
-  currentVehicleId = nil
+    string.format(
+      "Vehicle switched: %s -> %s",
+      tostring(oldId),
+      tostring(newId)))
+  currentVehicleId =
+  newId
+  syncPending = true
+  syncTimer = VEHICLE_SYNC_DELAY
 end
-function M.onVehicleDestroyed(vehicleId)
+function M.onVehicleSpawned(vehicleId)
   log(
-    "Vehicle destroyed: " ..
-    tostring(vehicleId)
-    )
+    "Vehicle spawned: "
+    .. tostring(vehicleId))
   if vehicleId == currentVehicleId then
-    currentVehicleId = nil
-    stopFFB()
+    syncPending = true
+    syncTimer = VEHICLE_SYNC_DELAY
   end
 end
--- ---------------------------------------------------------------------------
--- Extension lifecycle
--- ---------------------------------------------------------------------------
-function M.onExtensionLoaded()
-  -- This callback is not relied upon for initialization because extension
-  -- loading behavior can vary. init() below performs the actual setup.
+function M.onPlayerVehicleChange(vehicleId)
+  log(
+    "Player vehicle changed event: "
+    .. tostring(vehicleId))
+  currentVehicleId =
+  vehicleId
+  syncPending = true
+  syncTimer = VEHICLE_SYNC_DELAY
 end
-function M.onExtensionUnloaded()
-  log("Extension shutting down.")
-  -- Explicitly stop the helper-side force when BeamNG unloads the extension.
-  stopFFB()
-  if udpSocket then
-    udpSocket:close()
-    udpSocket = nil
-  end
-  socket = nil
-  initialized = false
-  currentVehicleId = nil
-  currentState = "STOP"
-  log("Extension unloaded.")
-end
--- ---------------------------------------------------------------------------
--- Initialization
--- ---------------------------------------------------------------------------
-local function initialize()
-  if initialized then
-    return true
-  end
-  log("Extension initialized.")
-  if not initializeUdp() then
-    log("UDP initialization failed.")
-    return false
-  end
-  initialized = true
-  -- Do not wait for the next vehicle spawn.
-  --
-  -- If BeamNG is already sitting in a vehicle when the extension is loaded,
-  -- synchronize it immediately.
-  currentVehicleId = nil
-  synchronizeVehicle()
-  return true
-end
--- ---------------------------------------------------------------------------
--- Update
--- ---------------------------------------------------------------------------
-function M.onUpdate(dtReal, dtSim, dtRaw)
-  if not initialized then
-    initialize()
-    return
-  end
-  synchronizeVehicle()
-end
--- ---------------------------------------------------------------------------
--- Public initialization entry point
--- ---------------------------------------------------------------------------
-function M.init()
-  initialize()
-end
--- ---------------------------------------------------------------------------
--- Initialize immediately when the extension is loaded.
--- ---------------------------------------------------------------------------
-initialize()
 return M

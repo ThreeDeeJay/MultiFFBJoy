@@ -527,7 +527,24 @@ template <typename... Args>
         }
         UpdateStatus();
     }
-    void ReacquireFFBDevice()
+// -------------------------------------------------------------------------
+// Force a complete FFB device re-acquisition.
+//
+// BeamNG can temporarily take the DirectInput device exclusively.  Merely
+// calling Acquire() on our existing interface is not sufficient in that
+// situation because the existing effect objects may also belong to the old
+// acquisition state.
+//
+// This function therefore:
+//   1. remembers the persistent spring state
+//   2. stops/releases all effects
+//   3. releases the DirectInput device
+//   4. waits briefly
+//   5. enumerates and opens the device again
+//   6. waits for exclusive ownership to become usable
+//   7. restores the persistent spring
+// -------------------------------------------------------------------------
+    bool ReacquireFFBDevice()
     {
         float previousSpringStrength = 0.0f;
         bool restoreSpring = false;
@@ -542,17 +559,139 @@ template <typename... Args>
         StopSpring();
         StopTestConstantForce();
         ReleaseFFBDevice();
-        Sleep(20);
-        if (!SelectFirstSuitableDevice())
+    // Give BeamNG / DirectInput a moment to release the old interface.
+        Sleep(100);
+        constexpr int MAX_ATTEMPTS = 20;
+        constexpr DWORD RETRY_DELAY_MS = 100;
+        for (int attempt = 1;
+           attempt <= MAX_ATTEMPTS && g_running;
+           ++attempt)
         {
-            Log("FFB re-acquisition failed.");
-            return;
+            Logf(
+                "FFB acquisition attempt %d/%d.",
+                attempt,
+                MAX_ATTEMPTS);
+            if (!SelectFirstSuitableDevice())
+            {
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        // SelectFirstSuitableDevice() creates the effects and acquires
+        // the device.  Before attempting to download the spring, verify
+        // that DirectInput currently considers the device exclusively
+        // acquired.
+            if (g_ffbDevice == nullptr)
+            {
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            HRESULT hr =
+            g_ffbDevice->Acquire();
+            if (FAILED(hr) &&
+                hr != DIERR_OTHERAPPHASPRIO)
+            {
+                Logf(
+                    "FFB Acquire() verification failed: 0x%08lX",
+                    static_cast<unsigned long>(hr));
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        // If BeamNG currently owns the device, wait and retry rather than
+        // immediately trying SetParameters(), which produces
+        // DIERR_NOTEXCLUSIVEACQUIRED (0x80040205).
+            bool usable = false;
+            for (int waitAttempt = 0;
+               waitAttempt < 10 && g_running;
+               ++waitAttempt)
+            {
+                DIJOYSTATE2 state{};
+                hr =
+                g_ffbDevice->GetDeviceState(
+                    sizeof(DIJOYSTATE2),
+                    &state);
+                if (SUCCEEDED(hr))
+                {
+                    usable = true;
+                    break;
+                }
+                Logf(
+                    "FFB device not yet usable: 0x%08lX",
+                    static_cast<unsigned long>(hr));
+                if (hr == DIERR_INPUTLOST ||
+                    hr == DIERR_NOTACQUIRED)
+                {
+                    hr =
+                    g_ffbDevice->Acquire();
+                    if (FAILED(hr))
+                    {
+                        Logf(
+                            "Acquire retry failed: 0x%08lX",
+                            static_cast<unsigned long>(hr));
+                    }
+                }
+                Sleep(50);
+            }
+            if (!usable)
+            {
+                Log(
+                    "FFB device is not exclusively usable yet.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            Log(
+                "FFB device is exclusively acquired and usable.");
+        // Recreate the spring now that exclusive ownership has been
+        // verified.  This is intentionally done after acquisition rather
+        // than assuming the effect created during enumeration is usable.
+            if (g_springEffect != nullptr)
+            {
+                g_springEffect->Release();
+                g_springEffect = nullptr;
+            }
+            if (!CreateSpringEffect())
+            {
+                Log(
+                    "Failed to recreate spring effect after acquisition.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            if (g_testConstantForceEffect != nullptr)
+            {
+                g_testConstantForceEffect->Release();
+                g_testConstantForceEffect = nullptr;
+            }
+            if (!CreateTestConstantForceEffect())
+            {
+                Log(
+                    "Failed to recreate constant-force test effect.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_state.acquired = true;
+            }
+            Log(
+                "FFB device successfully reinitialized.");
+        // Restore the persistent force only after the new device/effect
+        // has been verified.
+            if (restoreSpring)
+            {
+                Logf(
+                    "Restoring persistent spring: %.3f.",
+                    previousSpringStrength);
+                SetSpringStrength(
+                    previousSpringStrength);
+            }
+            return true;
         }
-        if (restoreSpring)
-        {
-            SetSpringStrength(
-                previousSpringStrength);
-        }
+        Log(
+            "FFB re-acquisition failed after all attempts.");
+        return false;
     }
 // -------------------------------------------------------------------------
 // Hardware auto-center
@@ -1129,8 +1268,10 @@ template <typename... Args>
 // -------------------------------------------------------------------------
 // Set spring strength
 // -------------------------------------------------------------------------
-    void SetSpringStrength(
-        float strength)
+// -------------------------------------------------------------------------
+// Set spring strength
+// -------------------------------------------------------------------------
+    bool SetSpringStrength(float strength)
     {
         strength =
         std::clamp(
@@ -1141,7 +1282,7 @@ template <typename... Args>
         {
             Log(
                 "SPRING ignored: no active FFB device.");
-            return;
+            return false;
         }
         if (g_springEffect == nullptr)
         {
@@ -1151,7 +1292,7 @@ template <typename... Args>
             {
                 Log(
                     "Could not recreate spring effect.");
-                return;
+                return false;
             }
         }
         DWORD axes[2] =
@@ -1215,19 +1356,25 @@ template <typename... Args>
         if (FAILED(hr))
         {
             Logf(
-                "SetParameters(Spring) failed: "
-                "0x%08lX",
+                "SetParameters(Spring) failed: 0x%08lX",
                 static_cast<unsigned long>(hr));
-/*
- * A stale effect object is one likely cause of
- * failures after BeamNG has taken/released the FFB
- * device. Destroy it so the next command will create
- * a fresh effect.
- */
+            if (hr == DIERR_NOTEXCLUSIVEACQUIRED)
+            {
+                Log(
+                    "Spring download rejected because FFB device "
+                    "is not exclusively acquired.");
+                return false;
+            }
+            if (hr == DIERR_INPUTLOST ||
+                hr == DIERR_NOTACQUIRED)
+            {
+                Log(
+                    "Spring download lost device acquisition.");
+                return false;
+            }
             g_springEffect->Release();
-            g_springEffect =
-            nullptr;
-            return;
+            g_springEffect = nullptr;
+            return false;
         }
         hr =
         g_springEffect->Start(
@@ -1236,21 +1383,31 @@ template <typename... Args>
         if (FAILED(hr))
         {
             Logf(
-                "Spring Start failed: "
-                "0x%08lX",
+                "Spring Start failed: 0x%08lX",
                 static_cast<unsigned long>(hr));
-            return;
+            if (hr == DIERR_NOTEXCLUSIVEACQUIRED ||
+                hr == DIERR_INPUTLOST ||
+                hr == DIERR_NOTACQUIRED)
+            {
+                Log(
+                    "Spring could not start because FFB ownership "
+                    "was lost.");
+                return false;
+            }
+            return false;
         }
         {
-            std::lock_guard<std::mutex> lock(
-                g_stateMutex);
+            std::lock_guard<std::mutex> lock(g_stateMutex);
             g_state.springStrength =
             strength;
+            g_state.springPersistent =
+            (strength > 0.0f);
         }
         UpdateStatus();
         Logf(
             "Spring strength set to %.3f.",
             strength);
+        return true;
     }
 // --------------------------------------------------------------------
 // Process UDP command
@@ -1272,7 +1429,16 @@ template <typename... Args>
         if (operation == "REACQUIRE")
         {
             Log("RX: REACQUIRE");
-            ReacquireFFBDevice();
+            if (ReacquireFFBDevice())
+            {
+                Log(
+                    "REACQUIRE completed successfully.");
+            }
+            else
+            {
+                Log(
+                    "REACQUIRE failed.");
+            }
             return;
         }
         if (operation == "STOP")
@@ -1285,16 +1451,36 @@ template <typename... Args>
         }
         if (operation == "CENTER")
         {
-            Log(
-                "RX: CENTER");
+            Log("RX: CENTER");
             if (!EnsureFFBDeviceReady())
             {
                 Log(
-                    "CENTER ignored: FFB device unavailable.");
-                return;
+                    "CENTER: device unavailable; attempting full re-acquisition.");
+                if (!ReacquireFFBDevice())
+                {
+                    Log(
+                        "CENTER ignored: FFB re-acquisition failed.");
+                    return;
+                }
             }
-            SetSpringStrength(
-                1.0f);
+            if (!SetSpringStrength(1.0f))
+            {
+                Log(
+                    "CENTER: spring download failed; "
+                    "attempting full FFB re-acquisition.");
+                if (!ReacquireFFBDevice())
+                {
+                    Log(
+                        "CENTER: FFB re-acquisition failed.");
+                    return;
+                }
+                if (!SetSpringStrength(1.0f))
+                {
+                    Log(
+                        "CENTER: spring still could not be started.");
+                    return;
+                }
+            }
             return;
         }
         if (operation == "SPRING")
