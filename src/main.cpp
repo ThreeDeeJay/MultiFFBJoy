@@ -527,6 +527,33 @@ template <typename... Args>
         }
         UpdateStatus();
     }
+    void ReacquireFFBDevice()
+    {
+        float previousSpringStrength = 0.0f;
+        bool restoreSpring = false;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            previousSpringStrength =
+            g_state.springStrength;
+            restoreSpring =
+            g_state.springPersistent;
+        }
+        Log("Re-acquiring FFB device...");
+        StopSpring();
+        StopTestConstantForce();
+        ReleaseFFBDevice();
+        Sleep(20);
+        if (!SelectFirstSuitableDevice())
+        {
+            Log("FFB re-acquisition failed.");
+            return;
+        }
+        if (restoreSpring)
+        {
+            SetSpringStrength(
+                previousSpringStrength);
+        }
+    }
 // -------------------------------------------------------------------------
 // Hardware auto-center
 // -------------------------------------------------------------------------
@@ -1240,6 +1267,12 @@ template <typename... Args>
         {
             Log(
                 "RX: PING");
+            return;
+        }
+        if (operation == "REACQUIRE")
+        {
+            Log("RX: REACQUIRE");
+            ReacquireFFBDevice();
             return;
         }
         if (operation == "STOP")
