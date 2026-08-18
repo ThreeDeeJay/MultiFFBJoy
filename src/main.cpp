@@ -30,6 +30,7 @@ int APIENTRY wWinMain(
     {
         return 1;
     }
+    g_running = true;
     if (!InitializeDirectInput(instance))
     {
         Log("DirectInput initialization failed.");
@@ -47,11 +48,6 @@ int APIENTRY wWinMain(
                 "FFB joystick initialized successfully.");
         }
     }
-    // Start the watchdog exactly once, outside device selection.
-    // The previous implementation started it from inside
-    // SelectFirstSuitableDevice(), which could create multiple
-    // watchdog threads during re-acquisition.
-    g_running = true;
     StartFFBWatchdog();
     if (!StartUdpServer())
     {
@@ -59,15 +55,6 @@ int APIENTRY wWinMain(
             "UDP server could not be started.");
     }
     RunMessageLoop();
-    // Shutdown order is deliberate:
-    //
-    // 1. Stop accepting network work.
-    // 2. Stop watchdog.
-    // 3. Stop/release FFB.
-    // 4. Release DirectInput.
-    //
-    // This prevents worker threads from touching COM/DirectInput
-    // objects while main is destroying them.
     StopUdpServer();
     g_running = false;
     StopFFBWatchdog();
