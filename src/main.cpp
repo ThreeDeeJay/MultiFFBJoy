@@ -687,6 +687,243 @@ template <typename... Args>
         }
         return false;
     }
+    bool ReacquireFFBDevice()
+    {
+    // Prevent overlapping re-acquisition attempts.
+        bool expected = false;
+        if (!g_reacquiring.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acquire,
+            std::memory_order_relaxed))
+        {
+            Log(
+                "REACQUIRE ignored: another re-acquisition "
+                "is already in progress.");
+            return false;
+        }
+    // Always release the re-acquisition guard, regardless of
+    // which return path is taken below.
+        struct ReacquireGuard
+        {
+            ~ReacquireGuard()
+            {
+                g_reacquiring.store(
+                    false,
+                    std::memory_order_release);
+            }
+        } reacquireGuard;
+        float previousSpringStrength = 0.0f;
+        bool restoreSpring = false;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            previousSpringStrength =
+            g_state.springStrength;
+            restoreSpring =
+            g_state.springPersistent;
+        }
+        Log("Re-acquiring FFB device...");
+    /*
+     * Stop any currently running effects before releasing the
+     * DirectInput device.
+     */
+        StopSpring();
+        StopTestConstantForce();
+        ReleaseFFBDevice();
+    /*
+     * Give BeamNG / DirectInput a moment to release the old
+     * interface before attempting to open it again.
+     */
+        Sleep(100);
+        constexpr int MAX_ATTEMPTS = 30;
+        constexpr DWORD RETRY_DELAY_MS = 100;
+        for (int attempt = 1;
+           attempt <= MAX_ATTEMPTS && g_running;
+           ++attempt)
+        {
+            Logf(
+                "FFB acquisition attempt %d/%d.",
+                attempt,
+                MAX_ATTEMPTS);
+        /*
+         * SelectFirstSuitableDevice():
+         *
+         *  - enumerates the attached DirectInput devices
+         *  - selects the suitable FFB joystick
+         *  - configures exclusive/background access
+         *  - disables hardware auto-center
+         *  - acquires the device
+         *  - creates the spring effect
+         *  - creates the constant-force test effect
+         */
+            if (!SelectFirstSuitableDevice())
+            {
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * Make sure SelectFirstSuitableDevice() actually left us
+         * with a valid DirectInput device.
+         */
+            if (g_ffbDevice == nullptr)
+            {
+                Log(
+                    "FFB acquisition returned without a valid "
+                    "DirectInput device.");
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * Verify that DirectInput currently considers the device
+         * acquired. BeamNG may briefly regain ownership while the
+         * game is changing vehicles/maps.
+         */
+            HRESULT hr =
+            g_ffbDevice->Acquire();
+            if (FAILED(hr) &&
+                hr != DIERR_OTHERAPPHASPRIO)
+            {
+                Logf(
+                    "FFB Acquire() verification failed: "
+                    "0x%08lX",
+                    static_cast<unsigned long>(hr));
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * Do not immediately attempt SetParameters().
+         *
+         * Even after Acquire(), the device can still be temporarily
+         * unavailable while BeamNG changes DirectInput ownership.
+         *
+         * Poll GetDeviceState() until the device is actually usable.
+         */
+            bool usable = false;
+            for (int waitAttempt = 0;
+               waitAttempt < 10 && g_running;
+               ++waitAttempt)
+            {
+                DIJOYSTATE2 state{};
+                hr =
+                g_ffbDevice->GetDeviceState(
+                    sizeof(DIJOYSTATE2),
+                    &state);
+                if (SUCCEEDED(hr))
+                {
+                    usable = true;
+                    break;
+                }
+                Logf(
+                    "FFB device not yet usable: "
+                    "0x%08lX",
+                    static_cast<unsigned long>(hr));
+                if (hr == DIERR_INPUTLOST ||
+                    hr == DIERR_NOTACQUIRED)
+                {
+                    hr =
+                    g_ffbDevice->Acquire();
+                    if (FAILED(hr))
+                    {
+                        Logf(
+                            "Acquire retry failed: "
+                            "0x%08lX",
+                            static_cast<unsigned long>(hr));
+                    }
+                }
+                Sleep(50);
+            }
+            if (!usable)
+            {
+                Log(
+                    "FFB device is not exclusively usable yet.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            Log(
+                "FFB device is exclusively acquired and usable.");
+        /*
+         * SelectFirstSuitableDevice() creates the initial effects,
+         * but recreate them after exclusive ownership has been
+         * explicitly verified.
+         *
+         * This avoids relying on an effect object that may have been
+         * created while DirectInput ownership was transitioning.
+         */
+            if (g_springEffect != nullptr)
+            {
+                g_springEffect->Release();
+                g_springEffect = nullptr;
+            }
+            if (!CreateSpringEffect())
+            {
+                Log(
+                    "Failed to recreate spring effect "
+                    "after acquisition.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            if (g_testConstantForceEffect != nullptr)
+            {
+                g_testConstantForceEffect->Release();
+                g_testConstantForceEffect = nullptr;
+            }
+            if (!CreateTestConstantForceEffect())
+            {
+                Log(
+                    "Failed to recreate constant-force test "
+                    "effect after acquisition.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * At this point the device and both effects have been
+         * successfully recreated while the device is usable.
+         */
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_state.acquired = true;
+            }
+            UpdateStatus();
+            Log(
+                "FFB device successfully reinitialized.");
+        /*
+         * Restore the spring only if it was active before the
+         * re-acquisition.
+         *
+         * This is important because CENTER and vehicle changes
+         * intentionally establish a persistent spring state.
+         */
+            if (restoreSpring)
+            {
+                Logf(
+                    "Restoring persistent spring: %.3f.",
+                    previousSpringStrength);
+                if (!SetSpringStrength(
+                    previousSpringStrength))
+                {
+                    Log(
+                        "Failed to restore persistent spring "
+                        "after re-acquisition.");
+                /*
+                 * The device itself is usable, so don't immediately
+                 * recursively call ReacquireFFBDevice() here.
+                 *
+                 * The caller can decide whether another acquisition
+                 * attempt is appropriate.
+                 */
+                    return false;
+                }
+            }
+            return true;
+        }
+        Log(
+            "FFB re-acquisition failed after all attempts.");
+        return false;
+    }
     void FFBWatchdogThread()
     {
         Log("FFB watchdog thread started.");
@@ -1105,243 +1342,6 @@ template <typename... Args>
             "Spring strength set to %.3f and effect started.",
             strength);
         return true;
-    }
-    bool ReacquireFFBDevice()
-    {
-    // Prevent overlapping re-acquisition attempts.
-        bool expected = false;
-        if (!g_reacquiring.compare_exchange_strong(
-            expected,
-            true,
-            std::memory_order_acquire,
-            std::memory_order_relaxed))
-        {
-            Log(
-                "REACQUIRE ignored: another re-acquisition "
-                "is already in progress.");
-            return false;
-        }
-    // Always release the re-acquisition guard, regardless of
-    // which return path is taken below.
-        struct ReacquireGuard
-        {
-            ~ReacquireGuard()
-            {
-                g_reacquiring.store(
-                    false,
-                    std::memory_order_release);
-            }
-        } reacquireGuard;
-        float previousSpringStrength = 0.0f;
-        bool restoreSpring = false;
-        {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
-            previousSpringStrength =
-            g_state.springStrength;
-            restoreSpring =
-            g_state.springPersistent;
-        }
-        Log("Re-acquiring FFB device...");
-    /*
-     * Stop any currently running effects before releasing the
-     * DirectInput device.
-     */
-        StopSpring();
-        StopTestConstantForce();
-        ReleaseFFBDevice();
-    /*
-     * Give BeamNG / DirectInput a moment to release the old
-     * interface before attempting to open it again.
-     */
-        Sleep(100);
-        constexpr int MAX_ATTEMPTS = 30;
-        constexpr DWORD RETRY_DELAY_MS = 100;
-        for (int attempt = 1;
-           attempt <= MAX_ATTEMPTS && g_running;
-           ++attempt)
-        {
-            Logf(
-                "FFB acquisition attempt %d/%d.",
-                attempt,
-                MAX_ATTEMPTS);
-        /*
-         * SelectFirstSuitableDevice():
-         *
-         *  - enumerates the attached DirectInput devices
-         *  - selects the suitable FFB joystick
-         *  - configures exclusive/background access
-         *  - disables hardware auto-center
-         *  - acquires the device
-         *  - creates the spring effect
-         *  - creates the constant-force test effect
-         */
-            if (!SelectFirstSuitableDevice())
-            {
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-        /*
-         * Make sure SelectFirstSuitableDevice() actually left us
-         * with a valid DirectInput device.
-         */
-            if (g_ffbDevice == nullptr)
-            {
-                Log(
-                    "FFB acquisition returned without a valid "
-                    "DirectInput device.");
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-        /*
-         * Verify that DirectInput currently considers the device
-         * acquired. BeamNG may briefly regain ownership while the
-         * game is changing vehicles/maps.
-         */
-            HRESULT hr =
-            g_ffbDevice->Acquire();
-            if (FAILED(hr) &&
-                hr != DIERR_OTHERAPPHASPRIO)
-            {
-                Logf(
-                    "FFB Acquire() verification failed: "
-                    "0x%08lX",
-                    static_cast<unsigned long>(hr));
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-        /*
-         * Do not immediately attempt SetParameters().
-         *
-         * Even after Acquire(), the device can still be temporarily
-         * unavailable while BeamNG changes DirectInput ownership.
-         *
-         * Poll GetDeviceState() until the device is actually usable.
-         */
-            bool usable = false;
-            for (int waitAttempt = 0;
-               waitAttempt < 10 && g_running;
-               ++waitAttempt)
-            {
-                DIJOYSTATE2 state{};
-                hr =
-                g_ffbDevice->GetDeviceState(
-                    sizeof(DIJOYSTATE2),
-                    &state);
-                if (SUCCEEDED(hr))
-                {
-                    usable = true;
-                    break;
-                }
-                Logf(
-                    "FFB device not yet usable: "
-                    "0x%08lX",
-                    static_cast<unsigned long>(hr));
-                if (hr == DIERR_INPUTLOST ||
-                    hr == DIERR_NOTACQUIRED)
-                {
-                    hr =
-                    g_ffbDevice->Acquire();
-                    if (FAILED(hr))
-                    {
-                        Logf(
-                            "Acquire retry failed: "
-                            "0x%08lX",
-                            static_cast<unsigned long>(hr));
-                    }
-                }
-                Sleep(50);
-            }
-            if (!usable)
-            {
-                Log(
-                    "FFB device is not exclusively usable yet.");
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-            Log(
-                "FFB device is exclusively acquired and usable.");
-        /*
-         * SelectFirstSuitableDevice() creates the initial effects,
-         * but recreate them after exclusive ownership has been
-         * explicitly verified.
-         *
-         * This avoids relying on an effect object that may have been
-         * created while DirectInput ownership was transitioning.
-         */
-            if (g_springEffect != nullptr)
-            {
-                g_springEffect->Release();
-                g_springEffect = nullptr;
-            }
-            if (!CreateSpringEffect())
-            {
-                Log(
-                    "Failed to recreate spring effect "
-                    "after acquisition.");
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-            if (g_testConstantForceEffect != nullptr)
-            {
-                g_testConstantForceEffect->Release();
-                g_testConstantForceEffect = nullptr;
-            }
-            if (!CreateTestConstantForceEffect())
-            {
-                Log(
-                    "Failed to recreate constant-force test "
-                    "effect after acquisition.");
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
-            }
-        /*
-         * At this point the device and both effects have been
-         * successfully recreated while the device is usable.
-         */
-            {
-                std::lock_guard<std::mutex> lock(g_stateMutex);
-                g_state.acquired = true;
-            }
-            UpdateStatus();
-            Log(
-                "FFB device successfully reinitialized.");
-        /*
-         * Restore the spring only if it was active before the
-         * re-acquisition.
-         *
-         * This is important because CENTER and vehicle changes
-         * intentionally establish a persistent spring state.
-         */
-            if (restoreSpring)
-            {
-                Logf(
-                    "Restoring persistent spring: %.3f.",
-                    previousSpringStrength);
-                if (!SetSpringStrength(
-                    previousSpringStrength))
-                {
-                    Log(
-                        "Failed to restore persistent spring "
-                        "after re-acquisition.");
-                /*
-                 * The device itself is usable, so don't immediately
-                 * recursively call ReacquireFFBDevice() here.
-                 *
-                 * The caller can decide whether another acquisition
-                 * attempt is appropriate.
-                 */
-                    return false;
-                }
-            }
-            return true;
-        }
-        Log(
-            "FFB re-acquisition failed after all attempts.");
-        return false;
     }
     void DisableHardwareAutoCenter()
     {
