@@ -370,32 +370,18 @@ namespace MultiFFBJoy
             int consecutiveFailures = 0;
             while (g_running)
             {
-/*
-* Never interfere with an explicit re-acquisition.
-*/
                 if (g_reacquiring.load(std::memory_order_acquire))
                 {
                     consecutiveFailures = 0;
                     Sleep(CHECK_INTERVAL_MS);
                     continue;
                 }
-/*
-* No device currently selected. There is nothing for
-* the watchdog to validate.
-*/
                 if (g_ffbDevice == nullptr)
                 {
                     consecutiveFailures = 0;
                     Sleep(CHECK_INTERVAL_MS);
                     continue;
                 }
-/*
-* Require several consecutive failed health checks before
-* declaring the DirectInput device genuinely lost.
-*
-* This prevents transient startup/focus/ownership changes
-* from immediately destroying and recreating the device.
-*/
                 if (IsFFBDeviceUsable())
                 {
                     consecutiveFailures = 0;
@@ -410,56 +396,26 @@ namespace MultiFFBJoy
                         REQUIRED_FAILURES);
                     if (consecutiveFailures >= REQUIRED_FAILURES)
                     {
-/*
-* Re-check the re-acquisition guard immediately
-* before starting recovery. This prevents a race
-* with another thread that may have just initiated
-* REACQUIRE.
-*/
-                        bool expected = false;
-                        if (g_reacquiring.compare_exchange_strong(
-                            expected,
-                            true,
-                            std::memory_order_acquire,
-                            std::memory_order_relaxed))
+                        if (g_reacquiring.load(std::memory_order_acquire))
                         {
-/*
-* We already own the re-acquisition guard.
-*
-* ReacquireFFBDevice() also uses the same guard,
-* so release ours before calling it. This lets
-* ReacquireFFBDevice() establish its own guard
-* normally.
-*/
-                            g_reacquiring.store(
-                                false,
-                                std::memory_order_release);
-                            Log(
-                                "FFB watchdog detected sustained "
-                                "device loss; starting re-acquisition.");
-                            if (ReacquireFFBDevice())
-                            {
-                                Log(
-                                    "FFB watchdog re-acquisition "
-                                    "completed successfully.");
-                            }
-                            else if (g_running)
-                            {
-                                Log(
-                                    "FFB watchdog re-acquisition failed.");
-                            }
+                            consecutiveFailures = 0;
+                            Sleep(FAILURE_RETRY_INTERVAL_MS);
+                            continue;
                         }
-                        else
+                        Log(
+                            "FFB watchdog detected sustained "
+                            "device loss; starting re-acquisition.");
+                        if (ReacquireFFBDevice())
                         {
                             Log(
-                                "FFB watchdog skipped re-acquisition: "
-                                "another re-acquisition is already in progress.");
+                                "FFB watchdog re-acquisition "
+                                "completed successfully.");
                         }
-/*
-* Start a fresh failure window after any recovery
-* attempt. Do not immediately trigger another
-* re-acquisition on the next watchdog iteration.
-*/
+                        else if (g_running)
+                        {
+                            Log(
+                                "FFB watchdog re-acquisition failed.");
+                        }
                         consecutiveFailures = 0;
                         Sleep(FAILURE_RETRY_INTERVAL_MS);
                         continue;
