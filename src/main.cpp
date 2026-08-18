@@ -1986,106 +1986,107 @@ template <typename... Args>
                 lParam);
         }
     }
+}
 // -----------------------------------------------------------------------------
 // Entry point
 // -----------------------------------------------------------------------------
-    int APIENTRY wWinMain(
-        HINSTANCE instance,
-        HINSTANCE,
-        LPWSTR,
-        int showCommand)
+int APIENTRY wWinMain(
+    HINSTANCE instance,
+    HINSTANCE,
+    LPWSTR,
+    int showCommand)
+{
+    WNDCLASSW windowClass{};
+    windowClass.hInstance =
+    instance;
+    windowClass.lpfnWndProc =
+    WindowProcedure;
+    windowClass.lpszClassName =
+    L"MultiFFBJoyWindow";
+    windowClass.hCursor =
+    LoadCursorW(
+        nullptr,
+        IDC_ARROW);
+    windowClass.hbrBackground =
+    reinterpret_cast<HBRUSH>(
+        COLOR_WINDOW + 1);
+    if (!RegisterClassW(
+        &windowClass))
     {
-        WNDCLASSW windowClass{};
-        windowClass.hInstance =
-        instance;
-        windowClass.lpfnWndProc =
-        WindowProcedure;
-        windowClass.lpszClassName =
-        L"MultiFFBJoyWindow";
-        windowClass.hCursor =
-        LoadCursorW(
-            nullptr,
-            IDC_ARROW);
-        windowClass.hbrBackground =
-        reinterpret_cast<HBRUSH>(
-            COLOR_WINDOW + 1);
-        if (!RegisterClassW(
-            &windowClass))
-        {
-            return 1;
-        }
-        g_mainWindow =
-        CreateWindowW(
-            windowClass.lpszClassName,
-            L"MultiFFBJoy - DirectInput FFB Bridge",
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            760,
-            560,
-            nullptr,
-            nullptr,
-            instance,
-            nullptr);
-        if (g_mainWindow == nullptr)
-        {
-            return 1;
-        }
-        ShowWindow(
-            g_mainWindow,
-            showCommand);
-        UpdateWindow(
-            g_mainWindow);
-        Log(
-            "MultiFFBJoy starting.");
-        HRESULT hr =
-        DirectInput8Create(
-            instance,
-            DIRECTINPUT_VERSION,
-            IID_IDirectInput8W,
-            reinterpret_cast<void**>(
-                &g_directInput),
-            nullptr);
-        if (FAILED(hr))
-        {
-            Logf(
-                "DirectInput8Create failed: "
-                "0x%08lX",
-                static_cast<unsigned long>(hr));
-        }
-        else
-        {
-            SelectFirstSuitableDevice();
-        }
-        if (!StartUdpServer())
-        {
-            Log(
-                "UDP server could not be started.");
-        }
-        MSG winMessage{};
-        while (GetMessageW(
-            &winMessage,
-            nullptr,
-            0,
-            0) > 0)
-        {
-            TranslateMessage(
-                &winMessage);
-            DispatchMessageW(
-                &winMessage);
-        }
-        StopUdpServer();
-        g_running = false;
-        if (g_ffbWatchdogThread.joinable())
-        {
-            g_ffbWatchdogThread.join();
-        }
-        ReleaseFFBDevice();
-        if (g_directInput != nullptr)
-        {
-            g_directInput->Release();
-            g_directInput =
-            nullptr;
-        }
-        return 0;
+        return 1;
     }
+    g_mainWindow =
+    CreateWindowW(
+        windowClass.lpszClassName,
+        L"MultiFFBJoy - DirectInput FFB Bridge",
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        760,
+        560,
+        nullptr,
+        nullptr,
+        instance,
+        nullptr);
+    if (g_mainWindow == nullptr)
+    {
+        return 1;
+    }
+    ShowWindow(
+        g_mainWindow,
+        showCommand);
+    UpdateWindow(
+        g_mainWindow);
+    Log(
+        "MultiFFBJoy starting.");
+    HRESULT hr =
+    DirectInput8Create(
+        instance,
+        DIRECTINPUT_VERSION,
+        IID_IDirectInput8W,
+        reinterpret_cast<void**>(
+            &g_directInput),
+        nullptr);
+    if (FAILED(hr))
+    {
+        Logf(
+            "DirectInput8Create failed: "
+            "0x%08lX",
+            static_cast<unsigned long>(hr));
+    }
+    else
+    {
+        SelectFirstSuitableDevice();
+    }
+    if (!StartUdpServer())
+    {
+        Log(
+            "UDP server could not be started.");
+    }
+    MSG winMessage{};
+    while (GetMessageW(
+        &winMessage,
+        nullptr,
+        0,
+        0) > 0)
+    {
+        TranslateMessage(
+            &winMessage);
+        DispatchMessageW(
+            &winMessage);
+    }
+    StopUdpServer();
+    g_running = false;
+    if (g_ffbWatchdogThread.joinable())
+    {
+        g_ffbWatchdogThread.join();
+    }
+    ReleaseFFBDevice();
+    if (g_directInput != nullptr)
+    {
+        g_directInput->Release();
+        g_directInput =
+        nullptr;
+    }
+    return 0;
+}
