@@ -199,9 +199,7 @@ namespace MultiFFBJoy
             Logf(
                 "ConstantForce Stop failed: 0x%08lX",
                 static_cast<unsigned long>(hr));
-            return;
         }
-        Log("Constant force stopped.");
     }
     bool SetSpringStrength(float strength)
     {
