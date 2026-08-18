@@ -219,8 +219,6 @@ namespace MultiFFBJoy
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_state.acquired = false;
             g_state.springStrength = 0.0f;
-        // Do NOT clear springPersistent here.
-        // ReacquireFFBDevice() needs it.
         }
         UpdateStatus();
     }
