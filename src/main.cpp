@@ -23,7 +23,6 @@
 namespace
 {
     constexpr UINT WM_APP_LOG = WM_APP + 1;
-// 65458 == 0xFFB2 == "FFB2"
     constexpr int UDP_PORT = 65458;
     constexpr DWORD COMMAND_TIMEOUT_MS = 250;
     constexpr DWORD SOCKET_TIMEOUT_MS = 25;
@@ -42,9 +41,6 @@ namespace
     std::mutex g_stateMutex;
     // Prevent overlapping DirectInput re-acquisition attempts.
     std::atomic<bool> g_reacquiring{false};
-// -------------------------------------------------------------------------
-// Device state
-// -------------------------------------------------------------------------
     struct DeviceState
     {
         std::wstring name = L"(none)";
@@ -60,9 +56,6 @@ namespace
         std::chrono::steady_clock::now();
     };
     DeviceState g_state;
-// -------------------------------------------------------------------------
-// Device candidate
-// -------------------------------------------------------------------------
     struct DeviceCandidate
     {
         GUID guid{};
@@ -79,9 +72,6 @@ namespace
         std::vector<DWORD> ffbActuatorOffsets;
     };
     std::vector<DeviceCandidate> g_candidates;
-// -------------------------------------------------------------------------
-// Logging
-// -------------------------------------------------------------------------
     std::wstring Utf8ToWide(const char* text)
     {
         if (text == nullptr)
@@ -182,9 +172,6 @@ template <typename... Args>
             "TX: %s",
             command.c_str());
     }
-// -------------------------------------------------------------------------
-// Status
-// -------------------------------------------------------------------------
     void UpdateStatus()
     {
         if (g_statusWindow == nullptr)
@@ -224,9 +211,6 @@ template <typename... Args>
             g_statusWindow,
             text);
     }
-// -----------------------------------------------------------------------------
-// DirectInput object enumeration
-// -----------------------------------------------------------------------------
     struct AxisEnumerationContext
     {
         DWORD axisCount = 0;
@@ -285,9 +269,6 @@ template <typename... Args>
         context->axes.push_back(axis);
         return DIENUM_CONTINUE;
     }
-// -------------------------------------------------------------------------
-// FFB effect enumeration
-// -------------------------------------------------------------------------
     struct EffectEnumerationContext
     {
         bool springSupported = false;
@@ -352,9 +333,6 @@ template <typename... Args>
         }
         return result.springSupported;
     }
-// -------------------------------------------------------------------------
-// Device enumeration
-// -------------------------------------------------------------------------
     BOOL CALLBACK EnumerateDevicesCallback(
         const DIDEVICEINSTANCEW* instance,
         VOID*)
@@ -461,9 +439,6 @@ template <typename... Args>
         device->Release();
         return DIENUM_CONTINUE;
     }
-// -------------------------------------------------------------------------
-// Stop spring
-// -------------------------------------------------------------------------
     void StopSpring()
     {
         if (g_springEffect != nullptr)
@@ -516,9 +491,6 @@ template <typename... Args>
         Log(
             "Constant force stopped.");
     }
-// -------------------------------------------------------------------------
-// Release FFB device
-// -------------------------------------------------------------------------
     void ReleaseFFBDevice()
     {
         StopSpringForRelease();
@@ -624,9 +596,6 @@ template <typename... Args>
             "Spring effect created.");
         return true;
     }
-// -------------------------------------------------------------------------
-// Create spring effect
-// -------------------------------------------------------------------------
     bool CreateTestConstantForceEffect()
     {
         if (g_ffbDevice == nullptr)
@@ -697,9 +666,56 @@ template <typename... Args>
             "Constant-force test effect created.");
         return true;
     }
-// -------------------------------------------------------------------------
-// Select suitable FFB device
-// -------------------------------------------------------------------------
+    bool IsFFBDeviceUsable()
+    {
+        if (g_ffbDevice == nullptr)
+            return false;
+        DIJOYSTATE2 state{};
+        HRESULT hr = g_ffbDevice->GetDeviceState(
+            sizeof(DIJOYSTATE2),
+            &state);
+        if (SUCCEEDED(hr))
+            return true;
+        Logf(
+            "FFB device health check failed: 0x%08lX",
+            static_cast<unsigned long>(hr));
+        if (hr == DIERR_INPUTLOST ||
+            hr == DIERR_NOTACQUIRED ||
+            hr == DIERR_NOTEXCLUSIVEACQUIRED)
+        {
+            return false;
+        }
+        return false;
+    }
+    void FFBWatchdogThread()
+    {
+        Log("FFB watchdog thread started.");
+        while (g_running)
+        {
+            if (g_ffbDevice != nullptr)
+            {
+                if (!IsFFBDeviceUsable())
+                {
+                    Log(
+                        "FFB watchdog detected lost device; "
+                        "starting re-acquisition.");
+                    if (ReacquireFFBDevice())
+                    {
+                        Log(
+                            "FFB watchdog re-acquisition "
+                            "completed successfully.");
+                    }
+                    else
+                    {
+                        Log(
+                            "FFB watchdog re-acquisition failed.");
+                    }
+                }
+            }
+            Sleep(100);
+        }
+        Log("FFB watchdog thread stopped.");
+    }
     bool SelectFirstSuitableDevice()
     {
         ReleaseFFBDevice();
@@ -1002,9 +1018,6 @@ template <typename... Args>
             "FFB device successfully reinitialized.");
         return true;
     }
-// -------------------------------------------------------------------------
-// Set spring strength
-// -------------------------------------------------------------------------
     bool SetSpringStrength(float strength)
     {
         if (g_ffbDevice == nullptr || g_springEffect == nullptr)
@@ -1093,28 +1106,9 @@ template <typename... Args>
             strength);
         return true;
     }
-// -------------------------------------------------------------------------
-// Force a complete FFB device re-acquisition.
-//
-// BeamNG can temporarily take the DirectInput device exclusively.  Merely
-// calling Acquire() on our existing interface is not sufficient in that
-// situation because the existing effect objects may also belong to the old
-// acquisition state.
-//
-// This function therefore:
-//   1. remembers the persistent spring state
-//   2. stops/releases all effects
-//   3. releases the DirectInput device
-//   4. waits briefly
-//   5. enumerates and opens the device again
-//   6. waits for exclusive ownership to become usable
-//   7. restores the persistent spring
-// -------------------------------------------------------------------------
-// -------------------------------------------------------------------------
-// Re-acquire FFB device after BeamNG may have taken/released ownership
-// -------------------------------------------------------------------------
     bool ReacquireFFBDevice()
     {
+    // Prevent overlapping re-acquisition attempts.
         bool expected = false;
         if (!g_reacquiring.compare_exchange_strong(
             expected,
@@ -1122,9 +1116,13 @@ template <typename... Args>
             std::memory_order_acquire,
             std::memory_order_relaxed))
         {
-            Log("REACQUIRE ignored: another re-acquisition is already in progress.");
+            Log(
+                "REACQUIRE ignored: another re-acquisition "
+                "is already in progress.");
             return false;
         }
+    // Always release the re-acquisition guard, regardless of
+    // which return path is taken below.
         struct ReacquireGuard
         {
             ~ReacquireGuard()
@@ -1144,66 +1142,207 @@ template <typename... Args>
             g_state.springPersistent;
         }
         Log("Re-acquiring FFB device...");
+    /*
+     * Stop any currently running effects before releasing the
+     * DirectInput device.
+     */
+        StopSpring();
+        StopTestConstantForce();
         ReleaseFFBDevice();
-    // Give BeamNG / DirectInput a moment to release the old interface.
+    /*
+     * Give BeamNG / DirectInput a moment to release the old
+     * interface before attempting to open it again.
+     */
         Sleep(100);
         constexpr int MAX_ATTEMPTS = 30;
         constexpr DWORD RETRY_DELAY_MS = 100;
-        ...
-        bool IsFFBDeviceUsable()
+        for (int attempt = 1;
+           attempt <= MAX_ATTEMPTS && g_running;
+           ++attempt)
         {
-            if (g_ffbDevice == nullptr)
-                return false;
-            DIJOYSTATE2 state{};
-            HRESULT hr = g_ffbDevice->GetDeviceState(
-                sizeof(DIJOYSTATE2),
-                &state);
-            if (SUCCEEDED(hr))
-                return true;
             Logf(
-                "FFB device health check failed: 0x%08lX",
-                static_cast<unsigned long>(hr));
-            if (hr == DIERR_INPUTLOST ||
-                hr == DIERR_NOTACQUIRED ||
-                hr == DIERR_NOTEXCLUSIVEACQUIRED)
+                "FFB acquisition attempt %d/%d.",
+                attempt,
+                MAX_ATTEMPTS);
+        /*
+         * SelectFirstSuitableDevice():
+         *
+         *  - enumerates the attached DirectInput devices
+         *  - selects the suitable FFB joystick
+         *  - configures exclusive/background access
+         *  - disables hardware auto-center
+         *  - acquires the device
+         *  - creates the spring effect
+         *  - creates the constant-force test effect
+         */
+            if (!SelectFirstSuitableDevice())
             {
-                return false;
+                Sleep(RETRY_DELAY_MS);
+                continue;
             }
-            return false;
-        }
-    }
-    void FFBWatchdogThread()
-    {
-        Log("FFB watchdog thread started.");
-        while (g_running)
-        {
-            if (g_ffbDevice != nullptr)
+        /*
+         * Make sure SelectFirstSuitableDevice() actually left us
+         * with a valid DirectInput device.
+         */
+            if (g_ffbDevice == nullptr)
             {
-                if (!IsFFBDeviceUsable())
+                Log(
+                    "FFB acquisition returned without a valid "
+                    "DirectInput device.");
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * Verify that DirectInput currently considers the device
+         * acquired. BeamNG may briefly regain ownership while the
+         * game is changing vehicles/maps.
+         */
+            HRESULT hr =
+            g_ffbDevice->Acquire();
+            if (FAILED(hr) &&
+                hr != DIERR_OTHERAPPHASPRIO)
+            {
+                Logf(
+                    "FFB Acquire() verification failed: "
+                    "0x%08lX",
+                    static_cast<unsigned long>(hr));
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * Do not immediately attempt SetParameters().
+         *
+         * Even after Acquire(), the device can still be temporarily
+         * unavailable while BeamNG changes DirectInput ownership.
+         *
+         * Poll GetDeviceState() until the device is actually usable.
+         */
+            bool usable = false;
+            for (int waitAttempt = 0;
+               waitAttempt < 10 && g_running;
+               ++waitAttempt)
+            {
+                DIJOYSTATE2 state{};
+                hr =
+                g_ffbDevice->GetDeviceState(
+                    sizeof(DIJOYSTATE2),
+                    &state);
+                if (SUCCEEDED(hr))
                 {
-                    Log(
-                        "FFB watchdog detected lost device; "
-                        "starting re-acquisition.");
-                    if (ReacquireFFBDevice())
+                    usable = true;
+                    break;
+                }
+                Logf(
+                    "FFB device not yet usable: "
+                    "0x%08lX",
+                    static_cast<unsigned long>(hr));
+                if (hr == DIERR_INPUTLOST ||
+                    hr == DIERR_NOTACQUIRED)
+                {
+                    hr =
+                    g_ffbDevice->Acquire();
+                    if (FAILED(hr))
                     {
-                        Log(
-                            "FFB watchdog re-acquisition "
-                            "completed successfully.");
-                    }
-                    else
-                    {
-                        Log(
-                            "FFB watchdog re-acquisition failed.");
+                        Logf(
+                            "Acquire retry failed: "
+                            "0x%08lX",
+                            static_cast<unsigned long>(hr));
                     }
                 }
+                Sleep(50);
             }
-            Sleep(100);
+            if (!usable)
+            {
+                Log(
+                    "FFB device is not exclusively usable yet.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            Log(
+                "FFB device is exclusively acquired and usable.");
+        /*
+         * SelectFirstSuitableDevice() creates the initial effects,
+         * but recreate them after exclusive ownership has been
+         * explicitly verified.
+         *
+         * This avoids relying on an effect object that may have been
+         * created while DirectInput ownership was transitioning.
+         */
+            if (g_springEffect != nullptr)
+            {
+                g_springEffect->Release();
+                g_springEffect = nullptr;
+            }
+            if (!CreateSpringEffect())
+            {
+                Log(
+                    "Failed to recreate spring effect "
+                    "after acquisition.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            if (g_testConstantForceEffect != nullptr)
+            {
+                g_testConstantForceEffect->Release();
+                g_testConstantForceEffect = nullptr;
+            }
+            if (!CreateTestConstantForceEffect())
+            {
+                Log(
+                    "Failed to recreate constant-force test "
+                    "effect after acquisition.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+        /*
+         * At this point the device and both effects have been
+         * successfully recreated while the device is usable.
+         */
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_state.acquired = true;
+            }
+            UpdateStatus();
+            Log(
+                "FFB device successfully reinitialized.");
+        /*
+         * Restore the spring only if it was active before the
+         * re-acquisition.
+         *
+         * This is important because CENTER and vehicle changes
+         * intentionally establish a persistent spring state.
+         */
+            if (restoreSpring)
+            {
+                Logf(
+                    "Restoring persistent spring: %.3f.",
+                    previousSpringStrength);
+                if (!SetSpringStrength(
+                    previousSpringStrength))
+                {
+                    Log(
+                        "Failed to restore persistent spring "
+                        "after re-acquisition.");
+                /*
+                 * The device itself is usable, so don't immediately
+                 * recursively call ReacquireFFBDevice() here.
+                 *
+                 * The caller can decide whether another acquisition
+                 * attempt is appropriate.
+                 */
+                    return false;
+                }
+            }
+            return true;
         }
-        Log("FFB watchdog thread stopped.");
+        Log(
+            "FFB re-acquisition failed after all attempts.");
+        return false;
     }
-// -------------------------------------------------------------------------
-// Hardware auto-center
-// -------------------------------------------------------------------------
     void DisableHardwareAutoCenter()
     {
         if (g_ffbDevice == nullptr)
@@ -1324,9 +1463,6 @@ template <typename... Args>
             magnitude);
         return true;
     }
-// --------------------------------------------------------------------
-// Process UDP command
-// -------------------------------------------------------------------------
     void ProcessCommand(
         const std::string& command)
     {
@@ -1478,9 +1614,6 @@ template <typename... Args>
                 operation.c_str());
         }
     }
-// -------------------------------------------------------------------------
-// UDP worker
-// -------------------------------------------------------------------------
     void NetworkThread()
     {
         while (g_running)
@@ -1555,9 +1688,6 @@ template <typename... Args>
             }
         }
     }
-// -------------------------------------------------------------------------
-// UDP startup
-// -------------------------------------------------------------------------
     bool StartUdpServer()
     {
         WSADATA wsaData{};
@@ -1632,9 +1762,6 @@ template <typename... Args>
             NetworkThread);
         return true;
     }
-// -------------------------------------------------------------------------
-// UDP shutdown
-// -------------------------------------------------------------------------
     void StopUdpServer()
     {
         g_running =
@@ -1653,9 +1780,6 @@ template <typename... Args>
         }
         WSACleanup();
     }
-// -----------------------------------------------------------------------------
-// Send a UDP command to the local MultiFFBJoy command socket
-// -----------------------------------------------------------------------------
     void SendUdpCommand(
         const char* command)
     {
@@ -1701,9 +1825,6 @@ template <typename... Args>
                 command);
         }
     }
-// -------------------------------------------------------------------------
-// Win32 window procedure
-// -------------------------------------------------------------------------
     LRESULT CALLBACK WindowProcedure(
         HWND window,
         UINT messageId,
@@ -1987,9 +2108,6 @@ template <typename... Args>
             lParam);
     }
 }
-// -----------------------------------------------------------------------------
-// Entry point
-// -----------------------------------------------------------------------------
 int APIENTRY wWinMain(
     HINSTANCE instance,
     HINSTANCE,
