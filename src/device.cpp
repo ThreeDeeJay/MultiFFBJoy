@@ -197,15 +197,15 @@ namespace MultiFFBJoy
     }
     void ReleaseFFBDevice()
     {
-        StopSpringForRelease();
-        StopTestConstantForce();
         if (g_springEffect != nullptr)
         {
+            StopSpringForRelease();
             g_springEffect->Release();
             g_springEffect = nullptr;
         }
         if (g_testConstantEffect != nullptr)
         {
+            StopTestConstantForce();
             g_testConstantEffect->Release();
             g_testConstantEffect = nullptr;
         }

@@ -457,8 +457,6 @@ namespace MultiFFBJoy
             }
         } guard;
         Log("Re-acquiring FFB device...");
-        StopSpringForRelease();
-        StopTestConstantForce();
         ReleaseFFBDevice();
         Sleep(100);
         constexpr int MAX_ATTEMPTS = 30;
