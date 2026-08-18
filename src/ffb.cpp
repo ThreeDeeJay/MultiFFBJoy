@@ -171,7 +171,8 @@ namespace MultiFFBJoy
                 hr != DIERR_INPUTLOST &&
                 hr != DIERR_NOTACQUIRED &&
                 hr != DIERR_NOTEXCLUSIVEACQUIRED &&
-                hr != DIERR_OBJECTNOTFOUND)
+                hr != DIERR_OBJECTNOTFOUND &&
+                hr != static_cast<HRESULT>(0x80040203L))
             {
                 Logf(
                     "Spring Stop failed: 0x%08lX",

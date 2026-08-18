@@ -123,6 +123,7 @@ namespace MultiFFBJoy
     }
     static void NetworkThread()
     {
+        bool timeoutStopIssued = false;
         while (g_running && g_networkRunning)
         {
             char buffer[1024]{};
@@ -143,6 +144,7 @@ namespace MultiFFBJoy
                     g_state.lastCommand =
                     std::chrono::steady_clock::now();
                 }
+                timeoutStopIssued = false;
                 ProcessCommand(std::string(buffer));
             }
             else if (received == SOCKET_ERROR)
@@ -176,7 +178,15 @@ namespace MultiFFBJoy
             }
             if (timedOut && !springPersistent)
             {
-                StopSpring();
+                if (!timeoutStopIssued)
+                {
+                    StopSpring();
+                    timeoutStopIssued = true;
+                }
+            }
+            else
+            {
+                timeoutStopIssued = false;
             }
         }
     }
