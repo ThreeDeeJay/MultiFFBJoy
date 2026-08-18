@@ -95,13 +95,12 @@
   </ItemDefinitionGroup>
 
   <ItemGroup>
+    <ClCompile Include="src\common.h" />
     <ClCompile Include="src\main.cpp" />
-    <ClCompile Include="src\common.cpp" />
-    <ClCompile Include="src\gui.cpp" />
-    <ClCompile Include="src\udp.cpp" />
     <ClCompile Include="src\device.cpp" />
     <ClCompile Include="src\ffb.cpp" />
-    <ClCompile Include="src\watchdog.cpp" />
+    <ClCompile Include="src\gui.cpp" />
+    <ClCompile Include="src\udp.cpp" />
   </ItemGroup>
 
   <ItemGroup>
