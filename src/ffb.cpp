@@ -456,13 +456,6 @@ namespace MultiFFBJoy
                     std::memory_order_release);
             }
         } guard;
-        float previousSpringStrength = 0.0f;
-        bool restoreSpring = false;
-        {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
-            previousSpringStrength = g_state.springStrength;
-            restoreSpring = g_state.springPersistent;
-        }
         Log("Re-acquiring FFB device...");
         StopSpringForRelease();
         StopTestConstantForce();
@@ -521,25 +514,20 @@ namespace MultiFFBJoy
             UpdateStatus();
             Log(
                 "FFB device successfully reinitialized.");
-            if (restoreSpring &&
-                previousSpringStrength > 0.0f)
+            Log(
+                "Starting persistent center spring after "
+                "successful re-acquisition.");
+            if (!SetSpringStrength(1.0f))
             {
-                Logf(
-                    "Restoring persistent spring: %.3f.",
-                    previousSpringStrength);
-                if (!SetSpringStrength(
-                    previousSpringStrength))
-                {
-                    Log(
-                        "Failed to restore persistent spring "
-                        "after re-acquisition.");
-                    ReleaseFFBDevice();
-                    Sleep(RETRY_DELAY_MS);
-                    continue;
-                }
                 Log(
-                    "Persistent spring restored successfully.");
+                    "Failed to start persistent center spring "
+                    "after re-acquisition.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
             }
+            Log(
+                "Persistent center spring started successfully.");
             return true;
         }
         Log(
