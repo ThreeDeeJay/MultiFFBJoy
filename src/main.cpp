@@ -41,6 +41,7 @@ namespace
     std::mutex g_stateMutex;
     // Prevent overlapping DirectInput re-acquisition attempts.
     std::atomic<bool> g_reacquiring{false};
+    void FFBWatchdogThread();
     struct DeviceState
     {
         std::wstring name = L"(none)";
@@ -907,60 +908,91 @@ template <typename... Args>
     }
     bool SetSpringStrength(float strength)
     {
-        if (g_ffbDevice == nullptr || g_springEffect == nullptr)
+        if (g_ffbDevice == nullptr ||
+            g_springEffect == nullptr)
         {
-            Log("SetSpringStrength: FFB device/effect unavailable.");
+            Log(
+                "SetSpringStrength: FFB device/effect unavailable.");
             return false;
         }
-        strength = std::clamp(strength, 0.0f, 1.0f);
-        LONG magnitude = static_cast<LONG>(
-            std::lround(strength * static_cast<float>(DI_FFNOMINALMAX)));
-        DICONSTANTFORCE constantForce{};
-        constantForce.lMagnitude = magnitude;
-        DIEFFECT effect{};
-        effect.dwSize = sizeof(DIEFFECT);
-        effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-        effect.dwDuration = INFINITE;
-        effect.dwSamplePeriod = 0;
-        effect.dwGain = DI_FFNOMINALMAX;
-        effect.dwTriggerButton = DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval = INFINITE;
-        effect.cAxes = 2;
-        LONG axes[2] = { DIJOFS_X, DIJOFS_Y };
-        LONG directions[2] = { 0, 0 };
-        effect.rgdwAxes = axes;
-        effect.rglDirection = directions;
+        strength =
+        std::clamp(
+            strength,
+            0.0f,
+            1.0f);
+        LONG magnitude =
+        static_cast<LONG>(
+            std::lround(
+                strength *
+                static_cast<float>(
+                    DI_FFNOMINALMAX)));
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
     /*
      * The spring effect is already created with its spring-specific
-     * parameters. We only need to update its magnitude here.
-     *
-     * IMPORTANT:
-     * DIEP_START is deliberately included below. Merely calling
-     * SetParameters() does not guarantee that the effect remains
-     * actively running after DirectInput ownership has changed.
+     * parameters. We update the condition coefficients here and
+     * explicitly restart the effect.
      */
         DICONDITION condition[2]{};
-        condition[0].lOffset = 0;
-        condition[0].lPositiveCoefficient = magnitude;
-        condition[0].lNegativeCoefficient = magnitude;
-        condition[0].dwPositiveSaturation = DI_FFNOMINALMAX;
-        condition[0].dwNegativeSaturation = DI_FFNOMINALMAX;
-        condition[0].lDeadBand = 0;
-        condition[1] = condition[0];
+        for (int i = 0; i < 2; ++i)
+        {
+            condition[i].lOffset =
+            0;
+            condition[i].lPositiveCoefficient =
+            magnitude;
+            condition[i].lNegativeCoefficient =
+            magnitude;
+            condition[i].dwPositiveSaturation =
+            DI_FFNOMINALMAX;
+            condition[i].dwNegativeSaturation =
+            DI_FFNOMINALMAX;
+            condition[i].lDeadBand =
+            0;
+        }
         DIEFFECT springEffect{};
-        springEffect.dwSize = sizeof(DIEFFECT);
-        springEffect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-        springEffect.dwDuration = INFINITE;
-        springEffect.dwSamplePeriod = 0;
-        springEffect.dwGain = DI_FFNOMINALMAX;
-        springEffect.dwTriggerButton = DIEB_NOTRIGGER;
-        springEffect.dwTriggerRepeatInterval = INFINITE;
-        springEffect.cAxes = 2;
-        springEffect.rgdwAxes = axes;
-        springEffect.rglDirection = directions;
-        springEffect.cbTypeSpecificParams = sizeof(condition);
-        springEffect.lpvTypeSpecificParams = condition;
-        HRESULT hr = g_springEffect->SetParameters(
+        springEffect.dwSize =
+        sizeof(DIEFFECT);
+        springEffect.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        springEffect.dwDuration =
+        INFINITE;
+        springEffect.dwSamplePeriod =
+        0;
+        springEffect.dwGain =
+        DI_FFNOMINALMAX;
+        springEffect.dwTriggerButton =
+        DIEB_NOTRIGGER;
+        springEffect.dwTriggerRepeatInterval =
+        INFINITE;
+        springEffect.cAxes =
+        2;
+        springEffect.rgdwAxes =
+        axes;
+        springEffect.rglDirection =
+        directions;
+        springEffect.cbTypeSpecificParams =
+        sizeof(condition);
+        springEffect.lpvTypeSpecificParams =
+        condition;
+    /*
+     * DIEP_START is intentional.
+     *
+     * After DirectInput ownership changes, merely updating the
+     * parameters may leave the effect stopped. Explicitly starting
+     * it here ensures the spring is running after every successful
+     * parameter download.
+     */
+        HRESULT hr =
+        g_springEffect->SetParameters(
             &springEffect,
             DIEP_TYPESPECIFICPARAMS |
             DIEP_DIRECTION |
@@ -968,28 +1000,30 @@ template <typename... Args>
         if (FAILED(hr))
         {
             Logf(
-                "SetParameters(Spring) failed: 0x%08lX",
-                static_cast<unsigned long>(hr));
-        /*
-         * If the device was lost between the readiness check and
-         * SetParameters(), don't silently leave the effect dead.
-         */
+                "SetParameters(Spring) failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(
+                    hr));
             if (hr == DIERR_INPUTLOST ||
                 hr == DIERR_NOTACQUIRED ||
                 hr == DIERR_NOTEXCLUSIVEACQUIRED)
             {
-                Log("Spring effect lost device access.");
-                return false;
+                Log(
+                    "Spring effect lost device access.");
             }
             return false;
         }
         {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
-            g_state.springStrength = strength;
-            g_state.springPersistent = (strength > 0.0f);
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
+            g_state.springStrength =
+            strength;
+            g_state.springPersistent =
+            (strength > 0.0f);
         }
         Logf(
-            "Spring strength set to %.3f and effect started.",
+            "Spring strength set to %.3f "
+            "and effect started.",
             strength);
         return true;
     }
@@ -1044,8 +1078,8 @@ template <typename... Args>
         constexpr int MAX_ATTEMPTS = 30;
         constexpr DWORD RETRY_DELAY_MS = 100;
         for (int attempt = 1;
-           attempt <= MAX_ATTEMPTS && g_running;
-           ++attempt)
+         attempt <= MAX_ATTEMPTS && g_running;
+         ++attempt)
         {
             Logf(
                 "FFB acquisition attempt %d/%d.",
@@ -1107,8 +1141,8 @@ template <typename... Args>
          */
             bool usable = false;
             for (int waitAttempt = 0;
-               waitAttempt < 10 && g_running;
-               ++waitAttempt)
+             waitAttempt < 10 && g_running;
+             ++waitAttempt)
             {
                 DIJOYSTATE2 state{};
                 hr =
