@@ -430,7 +430,6 @@ namespace MultiFFBJoy
     {
         if (g_ffbWatchdogThread.joinable())
         {
-        // g_running is cleared by main before this is called.
             g_ffbWatchdogThread.join();
         }
     }
