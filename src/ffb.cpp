@@ -372,28 +372,108 @@ namespace MultiFFBJoy
         g_ffbWatchdogThread = std::thread([]()
         {
             Log("FFB watchdog thread started.");
+            constexpr int REQUIRED_FAILURES = 5;
+            constexpr DWORD CHECK_INTERVAL_MS = 100;
+            constexpr DWORD FAILURE_RETRY_INTERVAL_MS = 100;
+            int consecutiveFailures = 0;
             while (g_running)
             {
-                if (!g_reacquiring.load(std::memory_order_acquire) &&
-                    g_ffbDevice != nullptr &&
-                    !IsFFBDeviceUsable())
+/*
+* Never interfere with an explicit re-acquisition.
+*/
+                if (g_reacquiring.load(std::memory_order_acquire))
                 {
-                    Log(
-                        "FFB watchdog detected lost device; "
-                        "starting re-acquisition.");
-                    if (ReacquireFFBDevice())
+                    consecutiveFailures = 0;
+                    Sleep(CHECK_INTERVAL_MS);
+                    continue;
+                }
+/*
+* No device currently selected. There is nothing for
+* the watchdog to validate.
+*/
+                if (g_ffbDevice == nullptr)
+                {
+                    consecutiveFailures = 0;
+                    Sleep(CHECK_INTERVAL_MS);
+                    continue;
+                }
+/*
+* Require several consecutive failed health checks before
+* declaring the DirectInput device genuinely lost.
+*
+* This prevents transient startup/focus/ownership changes
+* from immediately destroying and recreating the device.
+*/
+                if (IsFFBDeviceUsable())
+                {
+                    consecutiveFailures = 0;
+                }
+                else
+                {
+                    ++consecutiveFailures;
+                    Logf(
+                        "FFB watchdog health check failed "
+                        "(%d/%d).",
+                        consecutiveFailures,
+                        REQUIRED_FAILURES);
+                    if (consecutiveFailures >= REQUIRED_FAILURES)
                     {
-                        Log(
-                            "FFB watchdog re-acquisition "
-                            "completed successfully.");
-                    }
-                    else if (g_running)
-                    {
-                        Log(
-                            "FFB watchdog re-acquisition failed.");
+/*
+* Re-check the re-acquisition guard immediately
+* before starting recovery. This prevents a race
+* with another thread that may have just initiated
+* REACQUIRE.
+*/
+                        bool expected = false;
+                        if (g_reacquiring.compare_exchange_strong(
+                            expected,
+                            true,
+                            std::memory_order_acquire,
+                            std::memory_order_relaxed))
+                        {
+/*
+* We already own the re-acquisition guard.
+*
+* ReacquireFFBDevice() also uses the same guard,
+* so release ours before calling it. This lets
+* ReacquireFFBDevice() establish its own guard
+* normally.
+*/
+                            g_reacquiring.store(
+                                false,
+                                std::memory_order_release);
+                            Log(
+                                "FFB watchdog detected sustained "
+                                "device loss; starting re-acquisition.");
+                            if (ReacquireFFBDevice())
+                            {
+                                Log(
+                                    "FFB watchdog re-acquisition "
+                                    "completed successfully.");
+                            }
+                            else if (g_running)
+                            {
+                                Log(
+                                    "FFB watchdog re-acquisition failed.");
+                            }
+                        }
+                        else
+                        {
+                            Log(
+                                "FFB watchdog skipped re-acquisition: "
+                                "another re-acquisition is already in progress.");
+                        }
+/*
+* Start a fresh failure window after any recovery
+* attempt. Do not immediately trigger another
+* re-acquisition on the next watchdog iteration.
+*/
+                        consecutiveFailures = 0;
+                        Sleep(FAILURE_RETRY_INTERVAL_MS);
+                        continue;
                     }
                 }
-                Sleep(100);
+                Sleep(CHECK_INTERVAL_MS);
             }
             Log("FFB watchdog thread stopped.");
         });
@@ -463,8 +543,8 @@ namespace MultiFFBJoy
         constexpr int MAX_ATTEMPTS = 30;
         constexpr DWORD RETRY_DELAY_MS = 100;
         for (int attempt = 1;
-         attempt <= MAX_ATTEMPTS && g_running;
-         ++attempt)
+           attempt <= MAX_ATTEMPTS && g_running;
+           ++attempt)
         {
             Logf(
                 "FFB acquisition attempt %d/%d.",
@@ -502,8 +582,8 @@ namespace MultiFFBJoy
          */
             bool usable = false;
             for (int waitAttempt = 0;
-             waitAttempt < 10 && g_running;
-             ++waitAttempt)
+               waitAttempt < 10 && g_running;
+               ++waitAttempt)
             {
                 if (IsFFBDeviceUsable())
                 {
