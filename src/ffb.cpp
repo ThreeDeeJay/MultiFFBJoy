@@ -248,11 +248,6 @@ namespace MultiFFBJoy
         effect.rglDirection = directions;
         effect.cbTypeSpecificParams = sizeof(conditions);
         effect.lpvTypeSpecificParams = conditions;
-    // Do not use DIEP_START here.
-    //
-    // The effect is downloaded first, then explicitly started once.
-    // This avoids repeatedly re-triggering an infinite-duration
-    // effect during recovery.
         HRESULT hr = g_springEffect->SetParameters(
             &effect,
             DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION);
@@ -543,8 +538,8 @@ namespace MultiFFBJoy
         constexpr int MAX_ATTEMPTS = 30;
         constexpr DWORD RETRY_DELAY_MS = 100;
         for (int attempt = 1;
-         attempt <= MAX_ATTEMPTS && g_running;
-         ++attempt)
+           attempt <= MAX_ATTEMPTS && g_running;
+           ++attempt)
         {
             Logf(
                 "FFB acquisition attempt %d/%d.",
@@ -582,8 +577,8 @@ namespace MultiFFBJoy
          */
             bool usable = false;
             for (int waitAttempt = 0;
-             waitAttempt < 10 && g_running;
-             ++waitAttempt)
+               waitAttempt < 10 && g_running;
+               ++waitAttempt)
             {
                 if (IsFFBDeviceUsable())
                 {
@@ -687,8 +682,8 @@ namespace MultiFFBJoy
         constexpr int RETRY_COUNT = 3;
         constexpr DWORD RETRY_DELAY_MS = 50;
         for (int attempt = 1;
-           attempt <= RETRY_COUNT;
-           ++attempt)
+         attempt <= RETRY_COUNT;
+         ++attempt)
         {
             if (g_reacquiring.load(std::memory_order_acquire))
             {
