@@ -55,7 +55,10 @@ local function initializeUDP()
     return socket.udp()
   end)
   if not socketOK or socketResult == nil then
-    log("Failed to create UDP socket: " .. tostring(socketResult))
+    log(
+      "Failed to create UDP socket: "
+      .. tostring(socketResult)
+      )
     return false
   end
   udp = socketResult
@@ -70,24 +73,49 @@ local function initializeUDP()
     )
   return true
 end
-local function handleVehicleChange(vehicleId)
-  log(
-    "Player vehicle changed: "
-    .. tostring(currentVehicleId)
-    .. " -> "
-    .. tostring(vehicleId)
-    )
-  currentVehicleId = vehicleId
-  if vehicleId == nil or vehicleId == 0 then
-    log("No active player vehicle.")
-    return
+--[[
+  Get the current player vehicle directly from BeamNG's game object.
+  core_vehicle_manager.getPlayerVehicleID() was returning nil during
+  extension startup, so use be:getPlayerVehicleID(0) instead.
+  Vehicle 0 is the first player seat.
+  ]]
+  local function getPlayerVehicleId()
+    if be == nil then
+      return nil
+    end
+    local ok, result = pcall(function()
+      return be:getPlayerVehicleID(0)
+    end)
+    if not ok then
+      log(
+        "getPlayerVehicleID failed: "
+        .. tostring(result)
+        )
+      return nil
+    end
+    if result == nil or result == 0 then
+      return nil
+    end
+    return result
   end
-  requestReacquire()
-  -- Do not immediately center here.
+  local function handleVehicleChange(vehicleId)
+    log(
+      "Player vehicle changed: "
+      .. tostring(currentVehicleId)
+      .. " -> "
+      .. tostring(vehicleId)
+      )
+    currentVehicleId = vehicleId
+    if vehicleId == nil or vehicleId == 0 then
+      log("No active player vehicle.")
+      return
+    end
+    requestReacquire()
+  -- Do not immediately send CENTER here.
   --
-  -- REACQUIRE may have to wait for DirectInput to become usable.
-  -- The helper will eventually need to report READY before CENTER
-  -- is sent. For now, this only requests the re-acquisition.
+  -- REACQUIRE may have to wait for DirectInput ownership to become
+  -- available. The helper is responsible for restoring the
+  -- persistent spring after successful re-acquisition.
 end
 local function onVehicleSwitched(oldId, newId)
   log(
@@ -103,18 +131,8 @@ local function onVehicleSpawned(vehicleId)
     "onVehicleSpawned: "
     .. tostring(vehicleId)
     )
-  -- Only react if this is the player vehicle.
-  local playerId = nil
-  if core_vehicle_manager ~= nil then
-    if core_vehicle_manager.getPlayerVehicleID then
-      local ok, result = pcall(
-        core_vehicle_manager.getPlayerVehicleID
-        )
-      if ok then
-        playerId = result
-      end
-    end
-  end
+  -- Only react if this is the current player vehicle.
+  local playerId = getPlayerVehicleId()
   if playerId == vehicleId then
     handleVehicleChange(vehicleId)
   end
@@ -141,32 +159,29 @@ local function onExtensionLoaded()
   initialized = true
   log("Extension initialized.")
   initializeUDP()
-  -- Try to discover the player vehicle once the extension has loaded.
+  -- The extension can load before a player vehicle exists.
   --
-  -- This is deliberately delayed through a job so that the vehicle
-  -- manager has a chance to finish initializing.
+  -- Poll for up to 30 seconds rather than performing one lookup
+  -- after a fixed one-second delay.
   core_jobsystem.create(function(job)
-    job.sleep(1.0)
-    if not initialized then
-      return
-    end
-    local vehicleId = nil
-    if core_vehicle_manager ~= nil then
-      if core_vehicle_manager.getPlayerVehicleID then
-        local ok, result = pcall(
-          core_vehicle_manager.getPlayerVehicleID
+    local elapsed = 0
+    while initialized and elapsed < 30 do
+      local vehicleId = getPlayerVehicleId()
+      if vehicleId ~= nil then
+        log(
+          "Initial player vehicle detected: "
+          .. tostring(vehicleId)
           )
-        if ok then
-          vehicleId = result
-        end
+        handleVehicleChange(vehicleId)
+        return
       end
+      job.sleep(0.5)
+      elapsed = elapsed + 0.5
     end
-    log(
-      "Initial player vehicle query returned: "
-      .. tostring(vehicleId)
-      )
-    if vehicleId ~= nil and vehicleId ~= 0 then
-      handleVehicleChange(vehicleId)
+    if initialized then
+      log(
+        "No player vehicle detected during startup search."
+        )
     end
   end)
 end
