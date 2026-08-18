@@ -126,8 +126,8 @@ namespace MultiFFBJoy
                 instance->tszProductName,
                 axes.axisCount);
             for (size_t axisIndex = 0;
-               axisIndex < axes.axes.size();
-               ++axisIndex)
+             axisIndex < axes.axes.size();
+             ++axisIndex)
             {
                 const auto& axis = axes.axes[axisIndex];
                 Logf(
@@ -226,15 +226,6 @@ namespace MultiFFBJoy
     {
         if (g_directInput == nullptr)
             return false;
-    // This function MUST NOT call itself.
-    // It also MUST NOT start the watchdog.
-    //
-    // The previous version accidentally contained:
-    //
-    //     if (!SelectFirstSuitableDevice()) ...
-    //
-    // inside this function, which recursively re-entered device
-    // selection forever and repeatedly created/stopped FFB effects.
         ReleaseFFBDevice();
         g_candidates.clear();
         const HRESULT hr = g_directInput->EnumDevices(
