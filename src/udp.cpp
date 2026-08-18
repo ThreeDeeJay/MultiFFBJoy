@@ -33,13 +33,31 @@ namespace MultiFFBJoy
             Log("RX: CENTER");
             if (!EnsureFFBDeviceReady())
             {
-                Log("CENTER ignored: FFB device unavailable.");
+                Log(
+                    "CENTER ignored: FFB device unavailable "
+                    "after readiness check.");
                 return;
             }
             if (!SetSpringStrength(1.0f))
             {
-                Log("CENTER failed: could not start spring.");
+                Log(
+                    "CENTER failed: spring could not be started; "
+                    "attempting one full FFB re-acquisition.");
+                if (!ReacquireFFBDevice())
+                {
+                    Log(
+                        "CENTER failed: FFB re-acquisition failed.");
+                    return;
+                }
+                if (!SetSpringStrength(1.0f))
+                {
+                    Log(
+                        "CENTER failed: spring could not be started "
+                        "after re-acquisition.");
+                    return;
+                }
             }
+            Log("CENTER completed successfully.");
             return;
         }
         if (operation == "SPRING")
