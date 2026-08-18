@@ -505,55 +505,24 @@ namespace MultiFFBJoy
         bool restoreSpring = false;
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
-            previousSpringStrength =
-            g_state.springStrength;
-            restoreSpring =
-            g_state.springPersistent;
+            previousSpringStrength = g_state.springStrength;
+            restoreSpring = g_state.springPersistent;
         }
         Log("Re-acquiring FFB device...");
-    /*
-     * Stop currently running effects before releasing the device.
-     *
-     * IMPORTANT:
-     * Do not call ReleaseFFBDevice() until the effects have been
-     * explicitly stopped. StopSpringForRelease() is deliberately
-     * used instead of StopSpring(), because StopSpring() also
-     * modifies the persistent spring state.
-     */
         StopSpringForRelease();
         StopTestConstantForce();
-    /*
-     * ReleaseFFBDevice() performs the actual COM object cleanup
-     * and device unacquisition.
-     */
         ReleaseFFBDevice();
-    /*
-     * Give DirectInput/device ownership a short amount of time
-     * to settle before attempting to open the device again.
-     */
         Sleep(100);
         constexpr int MAX_ATTEMPTS = 30;
         constexpr DWORD RETRY_DELAY_MS = 100;
         for (int attempt = 1;
-           attempt <= MAX_ATTEMPTS && g_running;
-           ++attempt)
+            attempt <= MAX_ATTEMPTS && g_running;
+            ++attempt)
         {
             Logf(
                 "FFB acquisition attempt %d/%d.",
                 attempt,
                 MAX_ATTEMPTS);
-        /*
-         * SelectFirstSuitableDevice() is responsible for:
-         *
-         *   - enumerating devices
-         *   - selecting the SideWinder
-         *   - setting the data format
-         *   - setting cooperative level
-         *   - disabling hardware auto-center
-         *   - acquiring the device
-         *   - creating the spring effect
-         *   - creating the test effect
-         */
             if (!SelectFirstSuitableDevice())
             {
                 Sleep(RETRY_DELAY_MS);
@@ -567,15 +536,10 @@ namespace MultiFFBJoy
                 Sleep(RETRY_DELAY_MS);
                 continue;
             }
-        /*
-         * SelectFirstSuitableDevice() already acquired the device.
-         *
-         * Do NOT call Acquire() again here.
-         */
             bool usable = false;
             for (int waitAttempt = 0;
-               waitAttempt < 10 && g_running;
-               ++waitAttempt)
+                waitAttempt < 10 && g_running;
+                ++waitAttempt)
             {
                 if (IsFFBDeviceUsable())
                 {
@@ -595,17 +559,6 @@ namespace MultiFFBJoy
             }
             Log(
                 "FFB device is exclusively acquired and usable.");
-        /*
-         * SelectFirstSuitableDevice() already created the effects.
-         *
-         * Do NOT release/recreate them here.
-         *
-         * This is the important difference from the previous
-         * implementation. Releasing and recreating the effects
-         * immediately after SelectFirstSuitableDevice() caused
-         * unnecessary effect churn and made ownership/reacquisition
-         * behavior much harder to reason about.
-         */
             {
                 std::lock_guard<std::mutex> lock(g_stateMutex);
                 g_state.acquired = true;
@@ -613,10 +566,6 @@ namespace MultiFFBJoy
             UpdateStatus();
             Log(
                 "FFB device successfully reinitialized.");
-        /*
-         * Restore the spring only if it was actually persistent
-         * before the re-acquisition began.
-         */
             if (restoreSpring &&
                 previousSpringStrength > 0.0f)
             {
@@ -629,12 +578,9 @@ namespace MultiFFBJoy
                     Log(
                         "Failed to restore persistent spring "
                         "after re-acquisition.");
-                /*
-                 * The device itself is usable, so do not immediately
-                 * tear everything down here. The caller can decide
-                 * whether another acquisition attempt is appropriate.
-                 */
-                    return false;
+                    ReleaseFFBDevice();
+                    Sleep(RETRY_DELAY_MS);
+                    continue;
                 }
                 Log(
                     "Persistent spring restored successfully.");
