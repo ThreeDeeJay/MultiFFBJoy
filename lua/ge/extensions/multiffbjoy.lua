@@ -111,26 +111,21 @@ end
       return
     end
     requestReacquire()
-  -- Do not immediately send CENTER here.
-  --
-  -- REACQUIRE may have to wait for DirectInput ownership to become
-  -- available. The helper is responsible for restoring the
-  -- persistent spring after successful re-acquisition.
-end
-local function onVehicleSwitched(oldId, newId)
-  log(
-    "onVehicleSwitched: "
-    .. tostring(oldId)
-    .. " -> "
-    .. tostring(newId)
-    )
-  handleVehicleChange(newId)
-end
-local function onVehicleSpawned(vehicleId)
-  log(
-    "onVehicleSpawned: "
-    .. tostring(vehicleId)
-    )
+  end
+  local function onVehicleSwitched(oldId, newId)
+    log(
+      "onVehicleSwitched: "
+      .. tostring(oldId)
+      .. " -> "
+      .. tostring(newId)
+      )
+    handleVehicleChange(newId)
+  end
+  local function onVehicleSpawned(vehicleId)
+    log(
+      "onVehicleSpawned: "
+      .. tostring(vehicleId)
+      )
   -- Only react if this is the current player vehicle.
   local playerId = getPlayerVehicleId()
   if playerId == vehicleId then
