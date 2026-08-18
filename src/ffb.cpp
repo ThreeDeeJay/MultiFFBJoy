@@ -143,19 +143,18 @@ namespace MultiFFBJoy
     }
     void StopSpringForRelease()
     {
-        if (g_springEffect != nullptr)
+        if (g_springEffect == nullptr)
+            return;
+        HRESULT hr = g_springEffect->Stop();
+        if (FAILED(hr) &&
+            hr != DIERR_INPUTLOST &&
+            hr != DIERR_NOTACQUIRED &&
+            hr != DIERR_NOTEXCLUSIVEACQUIRED &&
+            hr != static_cast<HRESULT>(0x80040203L))
         {
-            HRESULT hr = g_springEffect->Stop();
-            if (FAILED(hr) &&
-                hr != DIERR_INPUTLOST &&
-                hr != DIERR_NOTACQUIRED &&
-                hr != DIERR_NOTEXCLUSIVEACQUIRED &&
-                hr != DIERR_OBJECTNOTFOUND)
-            {
-                Logf(
-                    "Spring Stop failed: 0x%08lX",
-                    static_cast<unsigned long>(hr));
-            }
+            Logf(
+                "Spring Stop failed: 0x%08lX",
+                static_cast<unsigned long>(hr));
         }
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
