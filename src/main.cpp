@@ -687,6 +687,312 @@ template <typename... Args>
         }
         return false;
     }
+    bool SelectFirstSuitableDevice()
+    {
+        ReleaseFFBDevice();
+        g_candidates.clear();
+        const HRESULT hr =
+        g_directInput->EnumDevices(
+            DI8DEVCLASS_GAMECTRL,
+            EnumerateDevicesCallback,
+            nullptr,
+            DIEDFL_ATTACHEDONLY);
+        if (FAILED(hr))
+        {
+            Logf(
+                "DirectInput enumeration failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            return false;
+        }
+        Logf(
+            "Found %zu attached game-controller device(s).",
+            g_candidates.size());
+        for (size_t i = 0;
+            i < g_candidates.size();
+            ++i)
+        {
+            const auto& candidate =
+            g_candidates[i];
+            Logf(
+                "[%zu] %ls | axes=%lu | X=%s | Y=%s | "
+                "FFB=%s | Spring=%s",
+                i,
+                candidate.name.c_str(),
+                candidate.axisCount,
+                candidate.hasXAxis ? "yes" : "no",
+                candidate.hasYAxis ? "yes" : "no",
+                candidate.forceFeedback ? "yes" : "no",
+                candidate.springSupported ? "yes" : "no");
+        }
+        for (const auto& candidate :
+            g_candidates)
+        {
+            if (!candidate.forceFeedback)
+                continue;
+            if (candidate.axisCount < 2)
+                continue;
+            if (!candidate.hasXAxis ||
+                !candidate.hasYAxis)
+            {
+                continue;
+            }
+/*
+ * A DirectInput FFB device must actually expose
+ * FFB actuator objects.
+ *
+ * This intentionally rejects vJoy in the current
+ * configuration because its X/Y objects are not
+ * DIDFT_FFACTUATOR objects.
+ */
+            if (candidate.ffbActuatorOffsets.size() < 2)
+            {
+                Logf(
+                    "Skipping %ls: only %zu FFB actuator axis(es).",
+                    candidate.name.c_str(),
+                    candidate.ffbActuatorOffsets.size());
+                continue;
+            }
+            if (!candidate.springSupported)
+                continue;
+            Logf(
+                "Attempting FFB device: %ls",
+                candidate.name.c_str());
+            IDirectInputDevice8W* device =
+            nullptr;
+            HRESULT openResult =
+            g_directInput->CreateDevice(
+                candidate.guid,
+                &device,
+                nullptr);
+            if (FAILED(openResult) ||
+                device == nullptr)
+            {
+                Logf(
+                    "Could not open %ls: 0x%08lX",
+                    candidate.name.c_str(),
+                    static_cast<unsigned long>(
+                        openResult));
+                continue;
+            }
+            openResult =
+            device->SetDataFormat(
+                &c_dfDIJoystick2);
+            if (FAILED(openResult))
+            {
+                Logf(
+                    "SetDataFormat failed for %ls: "
+                    "0x%08lX",
+                    candidate.name.c_str(),
+                    static_cast<unsigned long>(
+                        openResult));
+                device->Release();
+                continue;
+            }
+            openResult =
+            device->SetCooperativeLevel(
+                g_mainWindow,
+                DISCL_BACKGROUND |
+                DISCL_EXCLUSIVE);
+            if (FAILED(openResult))
+            {
+                Logf(
+                    "SetCooperativeLevel failed for %ls: "
+                    "0x%08lX",
+                    candidate.name.c_str(),
+                    static_cast<unsigned long>(
+                        openResult));
+                device->Release();
+                continue;
+            }
+/*
+ * Disable hardware auto-center BEFORE acquiring.
+ *
+ * We want all centering behavior to come from our
+ * software-controlled DirectInput spring effect.
+ */
+            DIPROPDWORD autoCenter{};
+            autoCenter.diph.dwSize =
+            sizeof(DIPROPDWORD);
+            autoCenter.diph.dwHeaderSize =
+            sizeof(DIPROPHEADER);
+            autoCenter.diph.dwObj =
+            0;
+            autoCenter.diph.dwHow =
+            DIPH_DEVICE;
+            autoCenter.dwData =
+            DIPROPAUTOCENTER_OFF;
+            const HRESULT autoCenterResult =
+            device->SetProperty(
+                DIPROP_AUTOCENTER,
+                &autoCenter.diph);
+            if (FAILED(autoCenterResult))
+            {
+                Logf(
+                    "Warning: could not disable hardware "
+                    "auto-center before Acquire: 0x%08lX",
+                    static_cast<unsigned long>(
+                        autoCenterResult));
+            }
+            else
+            {
+                Log(
+                    "Hardware auto-center disabled.");
+            }
+            openResult =
+            device->Acquire();
+            if (FAILED(openResult))
+            {
+                Logf(
+                    "Acquire failed for %ls: "
+                    "0x%08lX",
+                    candidate.name.c_str(),
+                    static_cast<unsigned long>(
+                        openResult));
+                device->Release();
+                continue;
+            }
+            g_ffbDevice =
+            device;
+            {
+                std::lock_guard<std::mutex> lock(
+                    g_stateMutex);
+                g_state.name =
+                candidate.name;
+                g_state.axisCount =
+                candidate.axisCount;
+                g_state.forceFeedback =
+                candidate.forceFeedback;
+                g_state.springSupported =
+                candidate.springSupported;
+                g_state.acquired =
+                true;
+                g_state.xAxisOffset =
+                DIJOFS_X;
+                g_state.yAxisOffset =
+                DIJOFS_Y;
+            }
+            Logf(
+                "Selected FFB device: %ls",
+                candidate.name.c_str());
+            if (!CreateSpringEffect())
+            {
+                Log(
+                    "Failed to create spring effect.");
+                ReleaseFFBDevice();
+                continue;
+            }
+            if (!CreateTestConstantForceEffect())
+            {
+                Log(
+                    "Failed to create constant-force test effect.");
+                ReleaseFFBDevice();
+                continue;
+            }
+            UpdateStatus();
+            if (!SelectFirstSuitableDevice())
+            {
+                Log("No suitable FFB joystick available at startup.");
+            }
+            else
+            {
+                Log("FFB joystick initialized successfully.");
+            }
+            g_ffbWatchdogThread = std::thread(FFBWatchdogThread);
+            return true;
+        }
+        Log(
+            "No suitable 2-axis FFB joystick found.");
+        return false;
+    }
+    bool SetSpringStrength(float strength)
+    {
+        if (g_ffbDevice == nullptr || g_springEffect == nullptr)
+        {
+            Log("SetSpringStrength: FFB device/effect unavailable.");
+            return false;
+        }
+        strength = std::clamp(strength, 0.0f, 1.0f);
+        LONG magnitude = static_cast<LONG>(
+            std::lround(strength * static_cast<float>(DI_FFNOMINALMAX)));
+        DICONSTANTFORCE constantForce{};
+        constantForce.lMagnitude = magnitude;
+        DIEFFECT effect{};
+        effect.dwSize = sizeof(DIEFFECT);
+        effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+        effect.dwDuration = INFINITE;
+        effect.dwSamplePeriod = 0;
+        effect.dwGain = DI_FFNOMINALMAX;
+        effect.dwTriggerButton = DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval = INFINITE;
+        effect.cAxes = 2;
+        LONG axes[2] = { DIJOFS_X, DIJOFS_Y };
+        LONG directions[2] = { 0, 0 };
+        effect.rgdwAxes = axes;
+        effect.rglDirection = directions;
+    /*
+     * The spring effect is already created with its spring-specific
+     * parameters. We only need to update its magnitude here.
+     *
+     * IMPORTANT:
+     * DIEP_START is deliberately included below. Merely calling
+     * SetParameters() does not guarantee that the effect remains
+     * actively running after DirectInput ownership has changed.
+     */
+        DICONDITION condition[2]{};
+        condition[0].lOffset = 0;
+        condition[0].lPositiveCoefficient = magnitude;
+        condition[0].lNegativeCoefficient = magnitude;
+        condition[0].dwPositiveSaturation = DI_FFNOMINALMAX;
+        condition[0].dwNegativeSaturation = DI_FFNOMINALMAX;
+        condition[0].lDeadBand = 0;
+        condition[1] = condition[0];
+        DIEFFECT springEffect{};
+        springEffect.dwSize = sizeof(DIEFFECT);
+        springEffect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+        springEffect.dwDuration = INFINITE;
+        springEffect.dwSamplePeriod = 0;
+        springEffect.dwGain = DI_FFNOMINALMAX;
+        springEffect.dwTriggerButton = DIEB_NOTRIGGER;
+        springEffect.dwTriggerRepeatInterval = INFINITE;
+        springEffect.cAxes = 2;
+        springEffect.rgdwAxes = axes;
+        springEffect.rglDirection = directions;
+        springEffect.cbTypeSpecificParams = sizeof(condition);
+        springEffect.lpvTypeSpecificParams = condition;
+        HRESULT hr = g_springEffect->SetParameters(
+            &springEffect,
+            DIEP_TYPESPECIFICPARAMS |
+            DIEP_DIRECTION |
+            DIEP_START);
+        if (FAILED(hr))
+        {
+            Logf(
+                "SetParameters(Spring) failed: 0x%08lX",
+                static_cast<unsigned long>(hr));
+        /*
+         * If the device was lost between the readiness check and
+         * SetParameters(), don't silently leave the effect dead.
+         */
+            if (hr == DIERR_INPUTLOST ||
+                hr == DIERR_NOTACQUIRED ||
+                hr == DIERR_NOTEXCLUSIVEACQUIRED)
+            {
+                Log("Spring effect lost device access.");
+                return false;
+            }
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            g_state.springStrength = strength;
+            g_state.springPersistent = (strength > 0.0f);
+        }
+        Logf(
+            "Spring strength set to %.3f and effect started.",
+            strength);
+        return true;
+    }
     bool ReacquireFFBDevice()
     {
     // Prevent overlapping re-acquisition attempts.
@@ -953,224 +1259,6 @@ template <typename... Args>
         }
         Log("FFB watchdog thread stopped.");
     }
-    bool SelectFirstSuitableDevice()
-    {
-        ReleaseFFBDevice();
-        g_candidates.clear();
-        const HRESULT hr =
-        g_directInput->EnumDevices(
-            DI8DEVCLASS_GAMECTRL,
-            EnumerateDevicesCallback,
-            nullptr,
-            DIEDFL_ATTACHEDONLY);
-        if (FAILED(hr))
-        {
-            Logf(
-                "DirectInput enumeration failed: "
-                "0x%08lX",
-                static_cast<unsigned long>(hr));
-            return false;
-        }
-        Logf(
-            "Found %zu attached game-controller device(s).",
-            g_candidates.size());
-        for (size_t i = 0;
-            i < g_candidates.size();
-            ++i)
-        {
-            const auto& candidate =
-            g_candidates[i];
-            Logf(
-                "[%zu] %ls | axes=%lu | X=%s | Y=%s | "
-                "FFB=%s | Spring=%s",
-                i,
-                candidate.name.c_str(),
-                candidate.axisCount,
-                candidate.hasXAxis ? "yes" : "no",
-                candidate.hasYAxis ? "yes" : "no",
-                candidate.forceFeedback ? "yes" : "no",
-                candidate.springSupported ? "yes" : "no");
-        }
-        for (const auto& candidate :
-            g_candidates)
-        {
-            if (!candidate.forceFeedback)
-                continue;
-            if (candidate.axisCount < 2)
-                continue;
-            if (!candidate.hasXAxis ||
-                !candidate.hasYAxis)
-            {
-                continue;
-            }
-/*
- * A DirectInput FFB device must actually expose
- * FFB actuator objects.
- *
- * This intentionally rejects vJoy in the current
- * configuration because its X/Y objects are not
- * DIDFT_FFACTUATOR objects.
- */
-            if (candidate.ffbActuatorOffsets.size() < 2)
-            {
-                Logf(
-                    "Skipping %ls: only %zu FFB actuator axis(es).",
-                    candidate.name.c_str(),
-                    candidate.ffbActuatorOffsets.size());
-                continue;
-            }
-            if (!candidate.springSupported)
-                continue;
-            Logf(
-                "Attempting FFB device: %ls",
-                candidate.name.c_str());
-            IDirectInputDevice8W* device =
-            nullptr;
-            HRESULT openResult =
-            g_directInput->CreateDevice(
-                candidate.guid,
-                &device,
-                nullptr);
-            if (FAILED(openResult) ||
-                device == nullptr)
-            {
-                Logf(
-                    "Could not open %ls: 0x%08lX",
-                    candidate.name.c_str(),
-                    static_cast<unsigned long>(
-                        openResult));
-                continue;
-            }
-            openResult =
-            device->SetDataFormat(
-                &c_dfDIJoystick2);
-            if (FAILED(openResult))
-            {
-                Logf(
-                    "SetDataFormat failed for %ls: "
-                    "0x%08lX",
-                    candidate.name.c_str(),
-                    static_cast<unsigned long>(
-                        openResult));
-                device->Release();
-                continue;
-            }
-            openResult =
-            device->SetCooperativeLevel(
-                g_mainWindow,
-                DISCL_BACKGROUND |
-                DISCL_EXCLUSIVE);
-            if (FAILED(openResult))
-            {
-                Logf(
-                    "SetCooperativeLevel failed for %ls: "
-                    "0x%08lX",
-                    candidate.name.c_str(),
-                    static_cast<unsigned long>(
-                        openResult));
-                device->Release();
-                continue;
-            }
-/*
- * Disable hardware auto-center BEFORE acquiring.
- *
- * We want all centering behavior to come from our
- * software-controlled DirectInput spring effect.
- */
-            DIPROPDWORD autoCenter{};
-            autoCenter.diph.dwSize =
-            sizeof(DIPROPDWORD);
-            autoCenter.diph.dwHeaderSize =
-            sizeof(DIPROPHEADER);
-            autoCenter.diph.dwObj =
-            0;
-            autoCenter.diph.dwHow =
-            DIPH_DEVICE;
-            autoCenter.dwData =
-            DIPROPAUTOCENTER_OFF;
-            const HRESULT autoCenterResult =
-            device->SetProperty(
-                DIPROP_AUTOCENTER,
-                &autoCenter.diph);
-            if (FAILED(autoCenterResult))
-            {
-                Logf(
-                    "Warning: could not disable hardware "
-                    "auto-center before Acquire: 0x%08lX",
-                    static_cast<unsigned long>(
-                        autoCenterResult));
-            }
-            else
-            {
-                Log(
-                    "Hardware auto-center disabled.");
-            }
-            openResult =
-            device->Acquire();
-            if (FAILED(openResult))
-            {
-                Logf(
-                    "Acquire failed for %ls: "
-                    "0x%08lX",
-                    candidate.name.c_str(),
-                    static_cast<unsigned long>(
-                        openResult));
-                device->Release();
-                continue;
-            }
-            g_ffbDevice =
-            device;
-            {
-                std::lock_guard<std::mutex> lock(
-                    g_stateMutex);
-                g_state.name =
-                candidate.name;
-                g_state.axisCount =
-                candidate.axisCount;
-                g_state.forceFeedback =
-                candidate.forceFeedback;
-                g_state.springSupported =
-                candidate.springSupported;
-                g_state.acquired =
-                true;
-                g_state.xAxisOffset =
-                DIJOFS_X;
-                g_state.yAxisOffset =
-                DIJOFS_Y;
-            }
-            Logf(
-                "Selected FFB device: %ls",
-                candidate.name.c_str());
-            if (!CreateSpringEffect())
-            {
-                Log(
-                    "Failed to create spring effect.");
-                ReleaseFFBDevice();
-                continue;
-            }
-            if (!CreateTestConstantForceEffect())
-            {
-                Log(
-                    "Failed to create constant-force test effect.");
-                ReleaseFFBDevice();
-                continue;
-            }
-            UpdateStatus();
-            if (!SelectFirstSuitableDevice())
-            {
-                Log("No suitable FFB joystick available at startup.");
-            }
-            else
-            {
-                Log("FFB joystick initialized successfully.");
-            }
-            g_ffbWatchdogThread = std::thread(FFBWatchdogThread);
-            return true;
-        }
-        Log(
-            "No suitable 2-axis FFB joystick found.");
-        return false;
-    }
     bool EnsureFFBDeviceReady()
     {
         if (g_ffbDevice == nullptr)
@@ -1253,94 +1341,6 @@ template <typename... Args>
         }
         Log(
             "FFB device successfully reinitialized.");
-        return true;
-    }
-    bool SetSpringStrength(float strength)
-    {
-        if (g_ffbDevice == nullptr || g_springEffect == nullptr)
-        {
-            Log("SetSpringStrength: FFB device/effect unavailable.");
-            return false;
-        }
-        strength = std::clamp(strength, 0.0f, 1.0f);
-        LONG magnitude = static_cast<LONG>(
-            std::lround(strength * static_cast<float>(DI_FFNOMINALMAX)));
-        DICONSTANTFORCE constantForce{};
-        constantForce.lMagnitude = magnitude;
-        DIEFFECT effect{};
-        effect.dwSize = sizeof(DIEFFECT);
-        effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-        effect.dwDuration = INFINITE;
-        effect.dwSamplePeriod = 0;
-        effect.dwGain = DI_FFNOMINALMAX;
-        effect.dwTriggerButton = DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval = INFINITE;
-        effect.cAxes = 2;
-        LONG axes[2] = { DIJOFS_X, DIJOFS_Y };
-        LONG directions[2] = { 0, 0 };
-        effect.rgdwAxes = axes;
-        effect.rglDirection = directions;
-    /*
-     * The spring effect is already created with its spring-specific
-     * parameters. We only need to update its magnitude here.
-     *
-     * IMPORTANT:
-     * DIEP_START is deliberately included below. Merely calling
-     * SetParameters() does not guarantee that the effect remains
-     * actively running after DirectInput ownership has changed.
-     */
-        DICONDITION condition[2]{};
-        condition[0].lOffset = 0;
-        condition[0].lPositiveCoefficient = magnitude;
-        condition[0].lNegativeCoefficient = magnitude;
-        condition[0].dwPositiveSaturation = DI_FFNOMINALMAX;
-        condition[0].dwNegativeSaturation = DI_FFNOMINALMAX;
-        condition[0].lDeadBand = 0;
-        condition[1] = condition[0];
-        DIEFFECT springEffect{};
-        springEffect.dwSize = sizeof(DIEFFECT);
-        springEffect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-        springEffect.dwDuration = INFINITE;
-        springEffect.dwSamplePeriod = 0;
-        springEffect.dwGain = DI_FFNOMINALMAX;
-        springEffect.dwTriggerButton = DIEB_NOTRIGGER;
-        springEffect.dwTriggerRepeatInterval = INFINITE;
-        springEffect.cAxes = 2;
-        springEffect.rgdwAxes = axes;
-        springEffect.rglDirection = directions;
-        springEffect.cbTypeSpecificParams = sizeof(condition);
-        springEffect.lpvTypeSpecificParams = condition;
-        HRESULT hr = g_springEffect->SetParameters(
-            &springEffect,
-            DIEP_TYPESPECIFICPARAMS |
-            DIEP_DIRECTION |
-            DIEP_START);
-        if (FAILED(hr))
-        {
-            Logf(
-                "SetParameters(Spring) failed: 0x%08lX",
-                static_cast<unsigned long>(hr));
-        /*
-         * If the device was lost between the readiness check and
-         * SetParameters(), don't silently leave the effect dead.
-         */
-            if (hr == DIERR_INPUTLOST ||
-                hr == DIERR_NOTACQUIRED ||
-                hr == DIERR_NOTEXCLUSIVEACQUIRED)
-            {
-                Log("Spring effect lost device access.");
-                return false;
-            }
-            return false;
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
-            g_state.springStrength = strength;
-            g_state.springPersistent = (strength > 0.0f);
-        }
-        Logf(
-            "Spring strength set to %.3f and effect started.",
-            strength);
         return true;
     }
     void DisableHardwareAutoCenter()
