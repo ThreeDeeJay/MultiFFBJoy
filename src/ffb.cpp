@@ -104,15 +104,40 @@ namespace MultiFFBJoy
     bool IsFFBDeviceUsable()
     {
         if (g_ffbDevice == nullptr)
+        {
             return false;
+        }
         DIJOYSTATE2 state{};
-        HRESULT hr = g_ffbDevice->GetDeviceState(
+        const HRESULT hr =
+        g_ffbDevice->GetDeviceState(
             sizeof(DIJOYSTATE2),
             &state);
         if (SUCCEEDED(hr))
+        {
             return true;
+        }
+    /*
+     * These HRESULTs mean DirectInput currently cannot provide
+     * the device state. They do NOT necessarily mean that the
+     * physical device has disappeared or that the COM device
+     * object is permanently unusable.
+     *
+     * In particular, DIERR_INPUTLOST and DIERR_NOTACQUIRED can
+     * occur during ownership/focus transitions.
+     */
+        if (hr == DIERR_INPUTLOST ||
+            hr == DIERR_NOTACQUIRED ||
+            hr == DIERR_NOTEXCLUSIVEACQUIRED)
+        {
+            return false;
+        }
+    /*
+     * Unexpected failure. Keep the diagnostic because this is
+     * something the watchdog should investigate.
+     */
         Logf(
-            "FFB device health check failed: 0x%08lX",
+            "FFB device health check failed unexpectedly: "
+            "0x%08lX",
             static_cast<unsigned long>(hr));
         return false;
     }
@@ -438,8 +463,8 @@ namespace MultiFFBJoy
         constexpr int MAX_ATTEMPTS = 30;
         constexpr DWORD RETRY_DELAY_MS = 100;
         for (int attempt = 1;
-           attempt <= MAX_ATTEMPTS && g_running;
-           ++attempt)
+         attempt <= MAX_ATTEMPTS && g_running;
+         ++attempt)
         {
             Logf(
                 "FFB acquisition attempt %d/%d.",
@@ -477,8 +502,8 @@ namespace MultiFFBJoy
          */
             bool usable = false;
             for (int waitAttempt = 0;
-               waitAttempt < 10 && g_running;
-               ++waitAttempt)
+             waitAttempt < 10 && g_running;
+             ++waitAttempt)
             {
                 if (IsFFBDeviceUsable())
                 {
