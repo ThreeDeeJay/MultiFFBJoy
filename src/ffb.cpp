@@ -381,39 +381,39 @@ namespace MultiFFBJoy
             g_ffbWatchdogThread.join();
         }
     }
-bool ReacquireFFBDevice()
-{
-    bool expected = false;
-    if (!g_reacquiring.compare_exchange_strong(
+    bool ReacquireFFBDevice()
+    {
+        bool expected = false;
+        if (!g_reacquiring.compare_exchange_strong(
             expected,
             true,
             std::memory_order_acquire,
             std::memory_order_relaxed))
-    {
-        Log(
-            "REACQUIRE ignored: another re-acquisition "
-            "is already in progress.");
-        return false;
-    }
-    struct ReacquireGuard
-    {
-        ~ReacquireGuard()
         {
-            g_reacquiring.store(
-                false,
-                std::memory_order_release);
+            Log(
+                "REACQUIRE ignored: another re-acquisition "
+                "is already in progress.");
+            return false;
         }
-    } guard;
-    float previousSpringStrength = 0.0f;
-    bool restoreSpring = false;
-    {
-        std::lock_guard<std::mutex> lock(g_stateMutex);
-        previousSpringStrength =
+        struct ReacquireGuard
+        {
+            ~ReacquireGuard()
+            {
+                g_reacquiring.store(
+                    false,
+                    std::memory_order_release);
+            }
+        } guard;
+        float previousSpringStrength = 0.0f;
+        bool restoreSpring = false;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            previousSpringStrength =
             g_state.springStrength;
-        restoreSpring =
+            restoreSpring =
             g_state.springPersistent;
-    }
-    Log("Re-acquiring FFB device...");
+        }
+        Log("Re-acquiring FFB device...");
     /*
      * Stop currently running effects before releasing the device.
      *
@@ -423,28 +423,28 @@ bool ReacquireFFBDevice()
      * used instead of StopSpring(), because StopSpring() also
      * modifies the persistent spring state.
      */
-    StopSpringForRelease();
-    StopTestConstantForce();
+        StopSpringForRelease();
+        StopTestConstantForce();
     /*
      * ReleaseFFBDevice() performs the actual COM object cleanup
      * and device unacquisition.
      */
-    ReleaseFFBDevice();
+        ReleaseFFBDevice();
     /*
      * Give DirectInput/device ownership a short amount of time
      * to settle before attempting to open the device again.
      */
-    Sleep(100);
-    constexpr int MAX_ATTEMPTS = 30;
-    constexpr DWORD RETRY_DELAY_MS = 100;
-    for (int attempt = 1;
-         attempt <= MAX_ATTEMPTS && g_running;
-         ++attempt)
-    {
-        Logf(
-            "FFB acquisition attempt %d/%d.",
-            attempt,
-            MAX_ATTEMPTS);
+        Sleep(100);
+        constexpr int MAX_ATTEMPTS = 30;
+        constexpr DWORD RETRY_DELAY_MS = 100;
+        for (int attempt = 1;
+           attempt <= MAX_ATTEMPTS && g_running;
+           ++attempt)
+        {
+            Logf(
+                "FFB acquisition attempt %d/%d.",
+                attempt,
+                MAX_ATTEMPTS);
         /*
          * SelectFirstSuitableDevice() is responsible for:
          *
@@ -457,47 +457,47 @@ bool ReacquireFFBDevice()
          *   - creating the spring effect
          *   - creating the test effect
          */
-        if (!SelectFirstSuitableDevice())
-        {
-            Sleep(RETRY_DELAY_MS);
-            continue;
-        }
-        if (g_ffbDevice == nullptr)
-        {
-            Log(
-                "Device selection reported success but "
-                "FFB device is null.");
-            Sleep(RETRY_DELAY_MS);
-            continue;
-        }
+            if (!SelectFirstSuitableDevice())
+            {
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
+            if (g_ffbDevice == nullptr)
+            {
+                Log(
+                    "Device selection reported success but "
+                    "FFB device is null.");
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
         /*
          * SelectFirstSuitableDevice() already acquired the device.
          *
          * Do NOT call Acquire() again here.
          */
-        bool usable = false;
-        for (int waitAttempt = 0;
-             waitAttempt < 10 && g_running;
-             ++waitAttempt)
-        {
-            if (IsFFBDeviceUsable())
+            bool usable = false;
+            for (int waitAttempt = 0;
+               waitAttempt < 10 && g_running;
+               ++waitAttempt)
             {
-                usable = true;
-                break;
+                if (IsFFBDeviceUsable())
+                {
+                    usable = true;
+                    break;
+                }
+                Sleep(50);
             }
-            Sleep(50);
-        }
-        if (!usable)
-        {
+            if (!usable)
+            {
+                Log(
+                    "FFB device did not become usable after "
+                    "successful selection.");
+                ReleaseFFBDevice();
+                Sleep(RETRY_DELAY_MS);
+                continue;
+            }
             Log(
-                "FFB device did not become usable after "
-                "successful selection.");
-            ReleaseFFBDevice();
-            Sleep(RETRY_DELAY_MS);
-            continue;
-        }
-        Log(
-            "FFB device is exclusively acquired and usable.");
+                "FFB device is exclusively acquired and usable.");
         /*
          * SelectFirstSuitableDevice() already created the effects.
          *
@@ -509,45 +509,45 @@ bool ReacquireFFBDevice()
          * unnecessary effect churn and made ownership/reacquisition
          * behavior much harder to reason about.
          */
-        {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
-            g_state.acquired = true;
-        }
-        UpdateStatus();
-        Log(
-            "FFB device successfully reinitialized.");
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_state.acquired = true;
+            }
+            UpdateStatus();
+            Log(
+                "FFB device successfully reinitialized.");
         /*
          * Restore the spring only if it was actually persistent
          * before the re-acquisition began.
          */
-        if (restoreSpring &&
-            previousSpringStrength > 0.0f)
-        {
-            Logf(
-                "Restoring persistent spring: %.3f.",
-                previousSpringStrength);
-            if (!SetSpringStrength(
-                    previousSpringStrength))
+            if (restoreSpring &&
+                previousSpringStrength > 0.0f)
             {
-                Log(
-                    "Failed to restore persistent spring "
-                    "after re-acquisition.");
+                Logf(
+                    "Restoring persistent spring: %.3f.",
+                    previousSpringStrength);
+                if (!SetSpringStrength(
+                    previousSpringStrength))
+                {
+                    Log(
+                        "Failed to restore persistent spring "
+                        "after re-acquisition.");
                 /*
                  * The device itself is usable, so do not immediately
                  * tear everything down here. The caller can decide
                  * whether another acquisition attempt is appropriate.
                  */
-                return false;
+                    return false;
+                }
+                Log(
+                    "Persistent spring restored successfully.");
             }
-            Log(
-                "Persistent spring restored successfully.");
+            return true;
         }
-        return true;
+        Log(
+            "FFB re-acquisition failed after all attempts.");
+        return false;
     }
-    Log(
-        "FFB re-acquisition failed after all attempts.");
-    return false;
-}
     bool EnsureFFBDeviceReady()
     {
         if (g_reacquiring.load(std::memory_order_acquire))
