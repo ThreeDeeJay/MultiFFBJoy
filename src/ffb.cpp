@@ -543,8 +543,8 @@ namespace MultiFFBJoy
         constexpr int MAX_ATTEMPTS = 30;
         constexpr DWORD RETRY_DELAY_MS = 100;
         for (int attempt = 1;
-           attempt <= MAX_ATTEMPTS && g_running;
-           ++attempt)
+         attempt <= MAX_ATTEMPTS && g_running;
+         ++attempt)
         {
             Logf(
                 "FFB acquisition attempt %d/%d.",
@@ -582,8 +582,8 @@ namespace MultiFFBJoy
          */
             bool usable = false;
             for (int waitAttempt = 0;
-               waitAttempt < 10 && g_running;
-               ++waitAttempt)
+             waitAttempt < 10 && g_running;
+             ++waitAttempt)
             {
                 if (IsFFBDeviceUsable())
                 {
@@ -656,7 +656,11 @@ namespace MultiFFBJoy
     bool EnsureFFBDeviceReady()
     {
         if (g_reacquiring.load(std::memory_order_acquire))
+        {
+            Log(
+                "EnsureFFBDeviceReady: re-acquisition already in progress.");
             return false;
+        }
         if (g_ffbDevice == nullptr)
         {
             Log(
@@ -671,7 +675,43 @@ namespace MultiFFBJoy
             }
             return true;
         }
-        Log("Existing FFB device is not usable; attempting reacquisition.");
+    /*
+     * A single failed health check is not enough to immediately
+     * destroy the current device. The watchdog is responsible for
+     * detecting sustained device loss.
+     *
+     * For an explicit CENTER request, however, we need a usable
+     * device immediately. Give DirectInput a brief opportunity to
+     * recover before performing the expensive full re-acquisition.
+     */
+        constexpr int RETRY_COUNT = 3;
+        constexpr DWORD RETRY_DELAY_MS = 50;
+        for (int attempt = 1;
+           attempt <= RETRY_COUNT;
+           ++attempt)
+        {
+            if (g_reacquiring.load(std::memory_order_acquire))
+            {
+                return false;
+            }
+            Sleep(RETRY_DELAY_MS);
+            if (IsFFBDeviceUsable())
+            {
+                {
+                    std::lock_guard<std::mutex> lock(g_stateMutex);
+                    g_state.acquired = true;
+                }
+                Logf(
+                    "FFB device became usable after health-check "
+                    "retry %d/%d.",
+                    attempt,
+                    RETRY_COUNT);
+                return true;
+            }
+        }
+        Log(
+            "Existing FFB device remains unusable; "
+            "attempting reacquisition.");
         return ReacquireFFBDevice();
     }
 } // namespace MultiFFBJoy
