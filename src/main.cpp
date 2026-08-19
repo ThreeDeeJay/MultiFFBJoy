@@ -17,11 +17,14 @@ namespace MultiFFBJoy
     std::mutex g_stateMutex;
     DeviceState g_state;
     std::vector<DeviceCandidate> g_candidates;
+// -----------------------------------------------------------------
+// Preset state
+// -----------------------------------------------------------------
     std::mutex g_presetMutex;
     FFBPreset g_loadedPreset;
     std::vector<PresetInfo> g_availablePresets;
     PresetTestState g_presetTestState;
-} // namespace MultiFFBJoy
+}
 using namespace MultiFFBJoy;
 int APIENTRY wWinMain(
     HINSTANCE instance,
@@ -30,14 +33,17 @@ int APIENTRY wWinMain(
     int showCommand)
 {
     Log("MultiFFBJoy starting.");
-    if (!CreateMainWindow(instance, showCommand))
+    if (!CreateMainWindow(
+        instance,
+        showCommand))
     {
         return 1;
     }
     g_running = true;
     if (!InitializeDirectInput(instance))
     {
-        Log("DirectInput initialization failed.");
+        Log(
+            "DirectInput initialization failed.");
     }
     else
     {
@@ -58,6 +64,7 @@ int APIENTRY wWinMain(
     StopUdpServer();
     g_running = false;
     StopFFBWatchdog();
+    ClearForceFieldPreset();
     ReleaseFFBDevice();
     ShutdownDirectInput();
     DestroyMainWindow();
