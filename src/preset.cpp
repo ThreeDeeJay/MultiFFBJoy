@@ -557,15 +557,10 @@ void UpdatePresetTest()
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
-        if (!g_loadedPreset.loaded ||
-            g_loadedPreset.forceFields.empty())
-        {
+        if (g_loadedPreset.forceFields.empty())
             return;
-        }
         if (!g_presetTestState.enabled)
-        {
             return;
-        }
     }
     LONG x = 0;
     LONG y = 0;
