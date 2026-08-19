@@ -17,9 +17,6 @@
 #include <vector>
 namespace MultiFFBJoy
 {
-// -------------------------------------------------------------------------
-// Constants
-// -------------------------------------------------------------------------
     inline constexpr UINT WM_APP_LOG = WM_APP + 1;
     inline constexpr int UDP_PORT = 65458;
     inline constexpr DWORD COMMAND_TIMEOUT_MS = 250;
@@ -32,9 +29,6 @@ namespace MultiFFBJoy
     inline constexpr int IDC_FFB_CENTER = 2006;
     inline constexpr int IDC_PRESET_LIST = 2101;
     inline constexpr int IDC_PRESET_LOAD = 2102;
-// -------------------------------------------------------------------------
-// Global application state
-// -------------------------------------------------------------------------
     extern HWND g_mainWindow;
     extern HWND g_statusWindow;
     extern HWND g_logWindow;
@@ -49,9 +43,6 @@ namespace MultiFFBJoy
     extern std::atomic<bool> g_networkRunning;
     extern std::atomic<bool> g_reacquiring;
     extern std::mutex g_stateMutex;
-// -------------------------------------------------------------------------
-// Device state
-// -------------------------------------------------------------------------
     struct DeviceState
     {
         std::wstring name = L"(none)";
@@ -67,9 +58,6 @@ namespace MultiFFBJoy
         std::chrono::steady_clock::now();
     };
     extern DeviceState g_state;
-// -------------------------------------------------------------------------
-// DirectInput device candidates
-// -------------------------------------------------------------------------
     struct DeviceCandidate
     {
         GUID guid{};
@@ -85,9 +73,6 @@ namespace MultiFFBJoy
         std::vector<DWORD> ffbActuatorOffsets;
     };
     extern std::vector<DeviceCandidate> g_candidates;
-// -------------------------------------------------------------------------
-// Forcefield representation
-// -------------------------------------------------------------------------
     struct ForceFieldVertex
     {
         LONG x = 0;
@@ -97,17 +82,13 @@ namespace MultiFFBJoy
     struct ForceField
     {
         std::string name;
-// FORCEFIELD TYPE
         int type = 0;
-// FORCEFIELD SHAPE TYPE
         int shapeType = 0;
         LONG centerX = 0;
         LONG centerY = 0;
         LONG centerZ = 0;
         std::vector<ForceFieldVertex> vertices;
-// FORCE TYPE
         int forceType = 0;
-// Key / shifter-related values retained from FFShifter files.
         int primaryKeyIndex = -1;
         int secondaryKeyIndex = -1;
         int primarySequentialGearValue = -1;
@@ -117,26 +98,17 @@ namespace MultiFFBJoy
         LONG offsetX = 0;
         LONG offsetY = 0;
     };
-// -------------------------------------------------------------------------
-// Loaded .fff file
-// -------------------------------------------------------------------------
     struct FFBPreset
     {
         std::filesystem::path path;
         std::string fileVersion;
         std::vector<ForceField> forceFields;
     };
-// -------------------------------------------------------------------------
-// GUI preset entry
-// -------------------------------------------------------------------------
     struct PresetInfo
     {
         std::filesystem::path path;
         std::wstring displayName;
     };
-// -------------------------------------------------------------------------
-// Preset test state
-// -------------------------------------------------------------------------
     struct PresetTestState
     {
         bool enabled = false;
@@ -148,9 +120,12 @@ namespace MultiFFBJoy
     extern FFBPreset g_loadedPreset;
     extern std::vector<PresetInfo> g_availablePresets;
     extern PresetTestState g_presetTestState;
-// -------------------------------------------------------------------------
-// Logging
-// -------------------------------------------------------------------------
+/*
+* The preset tester continuously reads the physical DirectInput
+* joystick position while a .fff preset is loaded.
+*/
+    extern std::thread g_presetTestThread;
+    extern std::atomic<bool> g_presetTestRunning;
     void Log(const std::string& text);
 template <typename... Args>
     void Logf(const char* format, Args... args)
@@ -164,9 +139,7 @@ template <typename... Args>
         Log(buffer);
     }
     std::wstring Utf8ToWide(const char* text);
-// -------------------------------------------------------------------------
 // GUI
-// -------------------------------------------------------------------------
     bool CreateMainWindow(
         HINSTANCE instance,
         int showCommand);
@@ -174,16 +147,12 @@ template <typename... Args>
     void DestroyMainWindow();
     void UpdateStatus();
     void PopulatePresetList();
-// -------------------------------------------------------------------------
 // UDP
-// -------------------------------------------------------------------------
     bool StartUdpServer();
     void StopUdpServer();
     void SendUdpCommand(
         const std::string& command);
-// -------------------------------------------------------------------------
 // FFB
-// -------------------------------------------------------------------------
     bool CreateSpringEffect();
     bool CreateTestConstantForceEffect();
     bool IsFFBDeviceUsable();
@@ -199,27 +168,39 @@ template <typename... Args>
     bool ReacquireFFBDevice();
     void StartFFBWatchdog();
     void StopFFBWatchdog();
-// Applies a parsed forcefield to the DirectInput spring implementation.
+/*
+* Applies one .fff spring forcefield to the physical FFB device.
+*
+* Stage 1 only supports the spring force type.
+*/
     bool SetSpringForceField(
         const ForceField& forceField);
-// -------------------------------------------------------------------------
-// DirectInput device management
-// -------------------------------------------------------------------------
+// Device
     bool InitializeDirectInput(
         HINSTANCE instance);
     void ShutdownDirectInput();
     bool SelectFirstSuitableDevice();
     void ReleaseFFBDevice();
-// -------------------------------------------------------------------------
-// Forcefield / .fff handling
-// -------------------------------------------------------------------------
-    std::vector<PresetInfo>
+// Forcefield / preset
+    std::vector<std::filesystem::path>
     EnumerateForceFieldPresets();
     bool LoadForceFieldPreset(
         const std::filesystem::path& path);
     void ClearForceFieldPreset();
     void UpdatePresetTest();
+/*
+* Starts/stops the continuous joystick-position monitor used
+* for the currently loaded .fff preset.
+*/
+    void StartPresetTest();
     void StopPresetTest();
+/*
+* Returns the forcefield containing the specified .fff-space
+* coordinate, or -1 if the coordinate is outside every zone.
+*/
+    int FindForceFieldAtPosition(
+        LONG x,
+        LONG y);
     bool IsForceFieldPresetLoaded();
     std::filesystem::path
     GetLoadedForceFieldPresetPath();
