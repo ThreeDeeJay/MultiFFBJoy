@@ -418,24 +418,26 @@ namespace MultiFFBJoy
                     field.forceType);
             }
         }
-        void PresetMonitorThreadProc()
+        void PresetTestMonitorThread()
         {
             Log(
                 "Preset monitor thread started.");
-            while (g_running)
+            while (g_presetTestRunning.load())
             {
                 bool enabled = false;
                 {
                     std::lock_guard<std::mutex> lock(
                         g_presetMutex);
                     enabled =
-                    g_presetTestState.enabled;
+                    g_presetTestState.enabled &&
+                    !g_loadedPreset.forceFields.empty();
                 }
                 if (enabled)
                 {
                     UpdatePresetTest();
                 }
-                Sleep(10);
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
             }
             Log(
                 "Preset monitor thread stopped.");
