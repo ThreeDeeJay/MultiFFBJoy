@@ -114,7 +114,8 @@ namespace MultiFFBJoy
     static HMENU MakeControlId(
         int id)
     {
-        return MAKEINTRESOURCEA(id);
+        return reinterpret_cast<HMENU>(
+            static_cast<INT_PTR>(id));
     }
 // ---------------------------------------------------------------------
 // Preset list
