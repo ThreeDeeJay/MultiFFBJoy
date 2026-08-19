@@ -641,6 +641,26 @@ void UpdatePresetTest()
             field.name.c_str());
     }
 }
+void StartPresetTestMonitor()
+{
+    if (g_presetTestRunning.exchange(true))
+    {
+        return;
+    }
+    g_presetTestThread =
+        std::thread(PresetTestMonitorThread);
+}
+void StopPresetTestMonitor()
+{
+    if (!g_presetTestRunning.exchange(false))
+    {
+        return;
+    }
+    if (g_presetTestThread.joinable())
+    {
+        g_presetTestThread.join();
+    }
+}
 void StartPresetTest()
 {
     if (!IsForceFieldPresetLoaded())
