@@ -621,9 +621,7 @@ void UpdatePresetTest()
     }
     if (SetSpringForceField(
         field.powerX,
-        field.powerY,
-        field.offsetX,
-        field.offsetY))
+        field.powerY))
     {
         Logf(
             "Applied spring forcefield \"%s\": "
