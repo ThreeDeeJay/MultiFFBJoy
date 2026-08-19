@@ -17,21 +17,20 @@
 #include <vector>
 namespace MultiFFBJoy
 {
-    constexpr UINT WM_APP_LOG = WM_APP + 1;
-    constexpr int UDP_PORT = 65458;
-    constexpr DWORD COMMAND_TIMEOUT_MS = 250;
-    constexpr DWORD SOCKET_TIMEOUT_MS = 25;
-    constexpr int IDC_FFB_UP = 2001;
-    constexpr int IDC_FFB_DOWN = 2002;
-    constexpr int IDC_FFB_LEFT = 2003;
-    constexpr int IDC_FFB_RIGHT = 2004;
-    constexpr int IDC_FFB_STOP = 2005;
-    constexpr int IDC_FFB_CENTER = 2006;
-    constexpr int IDC_PRESET_LIST = 2101;
-    constexpr int IDC_PRESET_LOAD = 2102;
-// FFShifter forcefield coordinates.
-    constexpr LONG FFB_COORD_MIN = -10000;
-    constexpr LONG FFB_COORD_MAX = 10000;
+    inline constexpr UINT WM_APP_LOG = WM_APP + 1;
+    inline constexpr int UDP_PORT = 65458;
+    inline constexpr DWORD COMMAND_TIMEOUT_MS = 250;
+    inline constexpr DWORD SOCKET_TIMEOUT_MS = 25;
+    inline constexpr int IDC_FFB_UP = 2001;
+    inline constexpr int IDC_FFB_DOWN = 2002;
+    inline constexpr int IDC_FFB_LEFT = 2003;
+    inline constexpr int IDC_FFB_RIGHT = 2004;
+    inline constexpr int IDC_FFB_STOP = 2005;
+    inline constexpr int IDC_FFB_CENTER = 2006;
+    inline constexpr int IDC_PRESET_LIST = 2101;
+    inline constexpr int IDC_PRESET_LOAD = 2102;
+    inline constexpr LONG FFB_COORD_MIN = -10000;
+    inline constexpr LONG FFB_COORD_MAX = 10000;
     extern HWND g_mainWindow;
     extern HWND g_statusWindow;
     extern HWND g_logWindow;
