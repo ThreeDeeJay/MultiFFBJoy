@@ -418,6 +418,131 @@ namespace MultiFFBJoy
                     field.forceType);
             }
         }
+        void PresetTestThreadProc()
+        {
+            Log(
+                "Preset monitor thread started.");
+            int lastZone = -2;
+            while (
+                g_presetTestRunning.load(
+                    std::memory_order_acquire))
+            {
+                bool enabled = false;
+                {
+                    std::lock_guard<std::mutex> lock(
+                        g_presetMutex);
+                    enabled =
+                    g_presetTestState.enabled;
+                }
+                if (!enabled)
+                {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(10));
+                    continue;
+                }
+                LONG x = 0;
+                LONG y = 0;
+                if (!ReadFFBJoystickPosition(
+                    x,
+                    y))
+                {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(10));
+                    continue;
+                }
+                const int zone =
+                FindForceFieldAtPosition(
+                    x,
+                    y);
+                if (zone != lastZone)
+                {
+                    if (zone >= 0)
+                    {
+                        std::string zoneName;
+                        ForceField field;
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                g_presetMutex);
+                            if (zone <
+                                static_cast<int>(
+                                    g_loadedPreset.forceFields.size()))
+                            {
+                                field =
+                                g_loadedPreset.forceFields[
+                                    static_cast<size_t>(zone)];
+                                zoneName =
+                                field.name;
+                            }
+                        }
+                        Logf(
+                            "Preset zone: \"%s\" "
+                            "(index=%d, X=%ld Y=%ld).",
+                            zoneName.c_str(),
+                            zone,
+                            x,
+                            y);
+                        if (zoneName.empty())
+                        {
+                            lastZone = zone;
+                            std::this_thread::sleep_for(
+                                std::chrono::milliseconds(10));
+                            continue;
+                        }
+                        if (field.forceType == 1)
+                        {
+                            if (SetSpringForceField(
+                                field))
+                            {
+                                Logf(
+                                    "Applied spring forcefield "
+                                    "\"%s\": center=(%ld,%ld), "
+                                    "power=(%ld,%ld), "
+                                    "offset=(%ld,%ld).",
+                                    field.name.c_str(),
+                                    field.centerX,
+                                    field.centerY,
+                                    field.powerX,
+                                    field.powerY,
+                                    field.offsetX,
+                                    field.offsetY);
+                            }
+                            else
+                            {
+                                Logf(
+                                    "Failed to apply spring "
+                                    "forcefield \"%s\".",
+                                    field.name.c_str());
+                            }
+                        }
+                        else
+                        {
+                            Logf(
+                                "Preset zone \"%s\" has "
+                                "unsupported force type %d; "
+                                "constant force will be "
+                                "implemented later.",
+                                field.name.c_str(),
+                                field.forceType);
+                        }
+                    }
+                    else
+                    {
+                        Logf(
+                            "Preset zone: none "
+                            "(stick X=%ld Y=%ld).",
+                            x,
+                            y);
+                        StopSpring();
+                    }
+                    lastZone = zone;
+                }
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
+            }
+            StopSpring();
+            Log(
+                "Preset monitor thread stopped.");
+        }
 } // anonymous namespace
 bool LoadForceFieldPreset(
     const std::filesystem::path& path)
@@ -541,7 +666,8 @@ void UpdatePresetTest()
     if (!EnsureFFBDeviceReady())
     {
         Log(
-            "Preset test ignored: FFB device unavailable.");
+            "Preset test ignored: "
+            "FFB device unavailable.");
         return;
     }
     {
@@ -552,9 +678,24 @@ void UpdatePresetTest()
         g_presetTestState.normalizedX = 0.0f;
         g_presetTestState.normalizedY = 0.0f;
     }
+    bool expected =
+    false;
+    if (g_presetTestRunning.compare_exchange_strong(
+        expected,
+        true,
+        std::memory_order_acq_rel))
+    {
+        if (g_presetTestThread.joinable())
+        {
+            g_presetTestThread.join();
+        }
+        g_presetTestThread =
+        std::thread(
+            PresetTestThreadProc);
+    }
     Log(
-        "Preset test enabled: spring forcefield zones "
-        "are now position-aware.");
+        "Preset test enabled: spring forcefield "
+        "zones are now position-aware.");
     Log(
         "Preset zone tracking started.");
 }
@@ -607,6 +748,13 @@ void StopPresetTest()
             g_presetMutex);
         g_presetTestState =
         PresetTestState{};
+    }
+    g_presetTestRunning.store(
+        false,
+        std::memory_order_release);
+    if (g_presetTestThread.joinable())
+    {
+        g_presetTestThread.join();
     }
     StopSpring();
     Log(
