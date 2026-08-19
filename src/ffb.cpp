@@ -290,7 +290,7 @@ namespace MultiFFBJoy
             return false;
         }
         if (forceField.forceType != 1 &&
-            forceField.forceFieldType != 1)
+            forceField.type != 1)
         {
             Logf(
                 "SetSpringForceField: forcefield \"%s\" is not a spring.",
