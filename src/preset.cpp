@@ -655,14 +655,6 @@ void UpdatePresetTest()
             "Preset test ignored: FFB device unavailable.");
         return;
     }
-/*
-* Stop an existing monitor before starting a new one.
-*/
-    g_presetTestRunning.store(false);
-    if (g_presetTestThread.joinable())
-    {
-        g_presetTestThread.join();
-    }
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
@@ -671,13 +663,9 @@ void UpdatePresetTest()
         g_presetTestState.normalizedX = 0.0f;
         g_presetTestState.normalizedY = 0.0f;
     }
-    g_presetTestRunning.store(true);
-    g_presetTestThread =
-    std::thread(
-        PresetTestThreadProc);
     Log(
-        "Preset test enabled: spring forcefield "
-        "zones are now position-aware.");
+        "Preset test enabled: spring forcefield zones "
+        "are now position-aware.");
     Log(
         "Preset zone tracking started.");
 }
@@ -730,11 +718,6 @@ void StopPresetTest()
             g_presetMutex);
         g_presetTestState =
         PresetTestState{};
-    }
-    g_presetTestRunning.store(false);
-    if (g_presetTestThread.joinable())
-    {
-        g_presetTestThread.join();
     }
     StopSpring();
     Log(
