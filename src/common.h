@@ -202,6 +202,6 @@ template <typename... Args>
         LONG x,
         LONG y);
     bool IsForceFieldPresetLoaded();
-    std::filesystem::path
+    std::filesystem::path GetLoadedForceFieldPresetPath();
     GetLoadedForceFieldPresetPath();
 }

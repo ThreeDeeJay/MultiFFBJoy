@@ -29,9 +29,9 @@ namespace MultiFFBJoy
             DI_FFNOMINALMAX;
             conditions[i].lNegativeCoefficient =
             DI_FFNOMINALMAX;
-            conditions[i].lPositiveSaturation =
+            conditions[i].dwPositiveSaturation =
             DI_FFNOMINALMAX;
-            conditions[i].lNegativeSaturation =
+            conditions[i].dwNegativeSaturation =
             DI_FFNOMINALMAX;
             conditions[i].lDeadBand = 0;
         }
@@ -327,8 +327,8 @@ namespace MultiFFBJoy
 *   lOffset
 *   lPositiveCoefficient
 *   lNegativeCoefficient
-*   lPositiveSaturation
-*   lNegativeSaturation
+*   dwPositiveSaturation
+*   dwNegativeSaturation
 *   lDeadBand
 *
 * FFShifter's forcefield data gives us:
@@ -346,9 +346,9 @@ namespace MultiFFBJoy
         forceField.powerX;
         conditions[0].lNegativeCoefficient =
         forceField.powerX;
-        conditions[0].lPositiveSaturation =
+        conditions[0].dwPositiveSaturation =
         DI_FFNOMINALMAX;
-        conditions[0].lNegativeSaturation =
+        conditions[0].dwNegativeSaturation =
         DI_FFNOMINALMAX;
         conditions[0].lDeadBand = 0;
         conditions[1].lOffset =
@@ -357,9 +357,9 @@ namespace MultiFFBJoy
         forceField.powerY;
         conditions[1].lNegativeCoefficient =
         forceField.powerY;
-        conditions[1].lPositiveSaturation =
+        conditions[1].dwPositiveSaturation =
         DI_FFNOMINALMAX;
-        conditions[1].lNegativeSaturation =
+        conditions[1].dwNegativeSaturation =
         DI_FFNOMINALMAX;
         conditions[1].lDeadBand = 0;
         DWORD axes[2]{};

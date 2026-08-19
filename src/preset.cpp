@@ -6,10 +6,10 @@ namespace MultiFFBJoy
 {
     std::mutex g_presetMutex;
     FFBPreset g_loadedPreset;
+    std::atomic<bool> g_presetTestRunning{false};
+    std::thread g_presetTestThread;
     namespace
     {
-        std::atomic<bool> g_presetTestRunning{false};
-        std::thread g_presetTestThread;
         std::string Trim(const std::string& value)
         {
             const auto first =
@@ -610,58 +610,45 @@ namespace MultiFFBJoy
                 i < g_loadedPreset.forceFields.size();
                 ++i)
             {
-                const auto& field =
+                const ForceField& field =
                 g_loadedPreset.forceFields[i];
                 Logf(
-                    "  [%zu] \"%s\": type=%d "
-                    "forceType=%d vertices=%zu "
-                    "power=(%ld,%ld) offset=(%ld,%ld)",
+                    "  Zone %zu: \"%s\" "
+                    "center=(%ld,%ld) "
+                    "vertices=%zu "
+                    "forceType=%d",
                     i,
                     field.name.c_str(),
-                    field.type,
-                    field.forceType,
+                    field.centerX,
+                    field.centerY,
                     field.vertices.size(),
-                    field.powerX,
-                    field.powerY,
-                    field.offsetX,
-                    field.offsetY);
+                    field.forceType);
             }
         }
         return true;
     }
     void ClearForceFieldPreset()
     {
-        g_presetTestRunning = false;
-        if (g_presetTestThread.joinable())
-        {
-            if (g_presetTestThread.get_id() !=
-                std::this_thread::get_id())
-            {
-                g_presetTestThread.join();
-            }
-        }
-        StopSpring();
+        StopPresetTest();
         {
             std::lock_guard<std::mutex> lock(
                 g_presetMutex);
             g_loadedPreset =
             FFBPreset{};
         }
-        Log(
-            "Forcefield preset cleared.");
+        Log("Forcefield preset cleared.");
     }
     bool IsForceFieldPresetLoaded()
     {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
+        std::lock_guard<std::mutex> lock(g_presetMutex);
         return
+        !g_loadedPreset.path.empty() &&
         !g_loadedPreset.forceFields.empty();
     }
     std::filesystem::path
     GetLoadedForceFieldPresetPath()
     {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
+        std::lock_guard<std::mutex> lock(g_presetMutex);
         return g_loadedPreset.path;
     }
     std::vector<std::filesystem::path>

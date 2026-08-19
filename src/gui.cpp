@@ -135,17 +135,22 @@ namespace MultiFFBJoy
             LB_RESETCONTENT,
             0,
             0);
-        g_availablePresets =
+        const std::vector<std::filesystem::path> paths =
         EnumerateForceFieldPresets();
-        for (const auto& preset :
-            g_availablePresets)
+        g_availablePresets.clear();
+        g_availablePresets.reserve(paths.size());
+        for (const auto& path : paths)
         {
+            PresetInfo info;
+            info.path = path;
+            info.displayName = path.filename().wstring();
+            g_availablePresets.push_back(info);
             SendMessageW(
                 list,
                 LB_ADDSTRING,
                 0,
                 reinterpret_cast<LPARAM>(
-                    preset.displayName.c_str()));
+                    info.displayName.c_str()));
         }
         Logf(
             "Found %zu forcefield preset(s).",
