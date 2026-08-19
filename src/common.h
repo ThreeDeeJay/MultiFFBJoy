@@ -191,6 +191,7 @@ template <typename... Args>
         const std::filesystem::path& path);
     void ClearForceFieldPreset();
     void UpdatePresetTest();
+    void StopPresetTest();
     bool SetSpringForceField(
         const ForceField& forceField);
 // Returns the active forcefield for a position expressed in

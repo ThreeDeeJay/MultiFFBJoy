@@ -7,6 +7,11 @@ namespace MultiFFBJoy
 {
     std::mutex g_presetMutex;
     FFBPreset g_loadedPreset;
+    namespace
+    {
+        std::atomic<bool> g_presetTestRunning{ false };
+        std::thread g_presetTestThread;
+    }
     std::vector<PresetInfo> g_availablePresets;
     PresetTestState g_presetTestState;
     namespace
@@ -562,6 +567,69 @@ void UpdatePresetTest()
         "are now position-aware.");
     Log(
         "Preset zone tracking started.");
+}
+int FindForceFieldAtPosition(
+    LONG x,
+    LONG y)
+{
+    std::lock_guard<std::mutex> lock(
+        g_presetMutex);
+    if (!g_loadedPreset.loaded ||
+        g_loadedPreset.forceFields.empty())
+    {
+        return -1;
+    }
+    for (size_t i = 0;
+        i < g_loadedPreset.forceFields.size();
+        ++i)
+    {
+        const ForceField& field =
+        g_loadedPreset.forceFields[i];
+        if (field.vertices.empty())
+        {
+            continue;
+        }
+        bool inside = false;
+/*
+* The .fff files we are currently supporting
+* describe the PRND zones as polygons in the
+* X/Y plane.
+*
+* Use a standard point-in-polygon test.
+*/
+        for (size_t j = 0;
+            j < field.vertices.size();
+            ++j)
+        {
+            const ForceFieldVertex& a =
+            field.vertices[j];
+            const ForceFieldVertex& b =
+            field.vertices[
+                (j + 1) %
+                field.vertices.size()];
+            const bool crosses =
+            ((a.y > y) != (b.y > y));
+            if (!crosses)
+            {
+                continue;
+            }
+            const double intersectionX =
+            static_cast<double>(b.x - a.x) *
+            static_cast<double>(y - a.y) /
+            static_cast<double>(b.y - a.y) +
+            static_cast<double>(a.x);
+            if (static_cast<double>(x) <
+                intersectionX)
+            {
+                inside = !inside;
+            }
+        }
+        if (inside)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
 }
 void StopPresetTest()
 {

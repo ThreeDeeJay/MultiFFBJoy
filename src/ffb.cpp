@@ -855,4 +855,34 @@ namespace MultiFFBJoy
         }
         return true;
     }
+    bool ReadFFBJoystickPosition(
+        LONG& x,
+        LONG& y)
+    {
+        x = 0;
+        y = 0;
+        IDirectInputDevice8W* device = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            if (g_ffbDevice == nullptr)
+            {
+                return false;
+            }
+            device = g_ffbDevice;
+            device->AddRef();
+        }
+        DIJOYSTATE2 state{};
+        const HRESULT hr =
+        device->GetDeviceState(
+            sizeof(state),
+            &state);
+        device->Release();
+        if (FAILED(hr))
+        {
+            return false;
+        }
+        x = state.lX;
+        y = state.lY;
+        return true;
+    }
 } // namespace MultiFFBJoy
