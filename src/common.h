@@ -17,19 +17,21 @@
 #include <vector>
 namespace MultiFFBJoy
 {
-    inline constexpr UINT WM_APP_LOG = WM_APP + 1;
-    inline constexpr int UDP_PORT = 65458;
-    inline constexpr DWORD COMMAND_TIMEOUT_MS = 250;
-    inline constexpr DWORD SOCKET_TIMEOUT_MS = 25;
-    inline constexpr int IDC_FFB_UP = 2001;
-    inline constexpr int IDC_FFB_DOWN = 2002;
-    inline constexpr int IDC_FFB_LEFT = 2003;
-    inline constexpr int IDC_FFB_RIGHT = 2004;
-    inline constexpr int IDC_FFB_STOP = 2005;
-    inline constexpr int IDC_FFB_CENTER = 2006;
-    // Preset GUI controls.
-    inline constexpr int IDC_PRESET_LIST = 2100;
-    inline constexpr int IDC_PRESET_LOAD = 2101;
+    constexpr UINT WM_APP_LOG = WM_APP + 1;
+    constexpr int UDP_PORT = 65458;
+    constexpr DWORD COMMAND_TIMEOUT_MS = 250;
+    constexpr DWORD SOCKET_TIMEOUT_MS = 25;
+    constexpr int IDC_FFB_UP = 2001;
+    constexpr int IDC_FFB_DOWN = 2002;
+    constexpr int IDC_FFB_LEFT = 2003;
+    constexpr int IDC_FFB_RIGHT = 2004;
+    constexpr int IDC_FFB_STOP = 2005;
+    constexpr int IDC_FFB_CENTER = 2006;
+    constexpr int IDC_PRESET_LIST = 2101;
+    constexpr int IDC_PRESET_LOAD = 2102;
+// ---------------------------------------------------------------------
+// Global application state
+// ---------------------------------------------------------------------
     extern HWND g_mainWindow;
     extern HWND g_statusWindow;
     extern HWND g_logWindow;
@@ -44,6 +46,9 @@ namespace MultiFFBJoy
     extern std::atomic<bool> g_networkRunning;
     extern std::atomic<bool> g_reacquiring;
     extern std::mutex g_stateMutex;
+// ---------------------------------------------------------------------
+// Device state
+// ---------------------------------------------------------------------
     struct DeviceState
     {
         std::wstring name = L"(none)";
@@ -74,9 +79,9 @@ namespace MultiFFBJoy
         std::vector<DWORD> ffbActuatorOffsets;
     };
     extern std::vector<DeviceCandidate> g_candidates;
-    // ---------------------------------------------------------------------
-    // FFShifter-compatible forcefield representation.
-    // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// FFShifter forcefield preset structures
+// ---------------------------------------------------------------------
     struct ForceFieldVertex
     {
         LONG x = 0;
@@ -86,20 +91,12 @@ namespace MultiFFBJoy
     struct ForceField
     {
         std::string name;
-        // FORCEFIELD TYPE.
-        // 0 = constant force
-        // 1 = spring force
-        int forceFieldType = 0;
-        // FORCEFIELD SHAPE TYPE.
-        // Currently retained for compatibility but not interpreted.
+        int type = 0;
         int shapeType = 0;
         LONG centerX = 0;
         LONG centerY = 0;
         LONG centerZ = 0;
         std::vector<ForceFieldVertex> vertices;
-        // FORCE TYPE.
-        // 0 = constant force
-        // 1 = spring force
         int forceType = 0;
         int primaryKeyIndex = -1;
         int secondaryKeyIndex = -1;
@@ -110,46 +107,64 @@ namespace MultiFFBJoy
         LONG offsetX = 0;
         LONG offsetY = 0;
     };
-    struct ForceFieldPreset
+    struct FFBPreset
     {
         std::filesystem::path path;
-        std::string version;
+        std::string fileVersion;
         std::vector<ForceField> forceFields;
-        bool loaded = false;
+    };
+    struct PresetInfo
+    {
+        std::filesystem::path path;
+        std::wstring displayName;
+    };
+    struct PresetTestState
+    {
+        bool enabled = false;
+        int activeForceField = -1;
+        float normalizedX = 0.0f;
+        float normalizedY = 0.0f;
     };
     extern std::mutex g_presetMutex;
-    extern ForceFieldPreset g_loadedPreset;
-    // ---------------------------------------------------------------------
-    // Logging.
-    // ---------------------------------------------------------------------
+    extern FFBPreset g_loadedPreset;
+    extern std::vector<PresetInfo> g_availablePresets;
+    extern PresetTestState g_presetTestState;
+// ---------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------
     void Log(const std::string& text);
-    template <typename... Args>
+template <typename... Args>
     void Logf(const char* format, Args... args)
     {
         char buffer[2048]{};
-        sprintf_s(buffer, sizeof(buffer), format, args...);
+        sprintf_s(
+            buffer,
+            sizeof(buffer),
+            format,
+            args...);
         Log(buffer);
     }
     std::wstring Utf8ToWide(const char* text);
-    // ---------------------------------------------------------------------
-    // GUI.
-    // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// GUI
+// ---------------------------------------------------------------------
     bool CreateMainWindow(
         HINSTANCE instance,
         int showCommand);
     int RunMessageLoop();
     void DestroyMainWindow();
     void UpdateStatus();
-    // ---------------------------------------------------------------------
-    // UDP.
-    // ---------------------------------------------------------------------
+    void PopulatePresetList();
+// ---------------------------------------------------------------------
+// UDP
+// ---------------------------------------------------------------------
     bool StartUdpServer();
     void StopUdpServer();
     void SendUdpCommand(
         const std::string& command);
-    // ---------------------------------------------------------------------
-    // FFB.
-    // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// FFB
+// ---------------------------------------------------------------------
     bool CreateSpringEffect();
     bool CreateTestConstantForceEffect();
     bool IsFFBDeviceUsable();
@@ -161,38 +176,27 @@ namespace MultiFFBJoy
     bool SetTestConstantForce(
         LONG x,
         LONG y);
-    // Apply one FFShifter spring forcefield.
-    bool SetSpringForceField(
-        const ForceField& forceField);
     bool EnsureFFBDeviceReady();
     bool ReacquireFFBDevice();
     void StartFFBWatchdog();
     void StopFFBWatchdog();
-    // ---------------------------------------------------------------------
-    // Device.
-    // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Device
+// ---------------------------------------------------------------------
     bool InitializeDirectInput(
         HINSTANCE instance);
     void ShutdownDirectInput();
     bool SelectFirstSuitableDevice();
     void ReleaseFFBDevice();
-    // ---------------------------------------------------------------------
-    // Presets.
-    // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Forcefield presets
+// ---------------------------------------------------------------------
+    std::vector<std::filesystem::path>
+    EnumerateForceFieldPresets();
     bool LoadForceFieldPreset(
         const std::filesystem::path& path);
     void ClearForceFieldPreset();
-    bool IsForceFieldPresetLoaded();
-    std::filesystem::path GetLoadedForceFieldPresetPath();
-    std::vector<std::filesystem::path>
-    EnumerateForceFieldPresets();
-    // Applies the currently loaded preset as a test.
     void UpdatePresetTest();
-    // Stop the current preset test and clear its active force.
-    void StopPresetTest();
-    // ---------------------------------------------------------------------
-    // Preset GUI.
-    // ---------------------------------------------------------------------
-    void RefreshPresetList();
-    bool LoadSelectedPresetFromGui();
+    bool SetSpringForceField(
+        const ForceField& forceField);
 }
