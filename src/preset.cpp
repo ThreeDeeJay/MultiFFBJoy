@@ -1,16 +1,18 @@
 #include "common.h"
 #include <cctype>
 #include <cstring>
+#include <limits>
 #include <sstream>
 namespace MultiFFBJoy
 {
     std::mutex g_presetMutex;
     FFBPreset g_loadedPreset;
-    std::atomic<bool> g_presetTestRunning{false};
-    std::thread g_presetTestThread;
+    std::vector<PresetInfo> g_availablePresets;
+    PresetTestState g_presetTestState;
     namespace
     {
-        std::string Trim(const std::string& value)
+        std::string Trim(
+            const std::string& value)
         {
             const auto first =
             value.find_first_not_of(" \t\r\n");
@@ -22,7 +24,8 @@ namespace MultiFFBJoy
                 first,
                 last - first + 1);
         }
-        std::string Unquote(const std::string& value)
+        std::string Unquote(
+            const std::string& value)
         {
             std::string result = Trim(value);
             if (result.size() >= 2 &&
@@ -66,8 +69,12 @@ namespace MultiFFBJoy
             int& result)
         {
             LONG temp = 0;
-            if (!ParseLong(value, temp))
+            if (!ParseLong(
+                value,
+                temp))
+            {
                 return false;
+            }
             result =
             static_cast<int>(temp);
             return true;
@@ -134,7 +141,8 @@ namespace MultiFFBJoy
         bool IsForceFieldNameLine(
             const std::string& line)
         {
-            return line.rfind(
+            return
+            line.rfind(
                 "FORCEFIELD NAME=",
                 0) == 0;
         }
@@ -200,7 +208,8 @@ namespace MultiFFBJoy
                         preset.forceFields.push_back(
                             current);
                     }
-                    current = ForceField{};
+                    current =
+                    ForceField{};
                     haveCurrent = true;
                     ParseString(
                         line,
@@ -238,13 +247,13 @@ namespace MultiFFBJoy
                 {
                     if (vertexIndex >= 0)
                     {
-                        if (current.vertices.size() <=
-                            static_cast<size_t>(
-                                vertexIndex))
+                        const size_t index =
+                        static_cast<size_t>(
+                            vertexIndex);
+                        if (current.vertices.size() <= index)
                         {
                             current.vertices.resize(
-                                static_cast<size_t>(
-                                    vertexIndex) + 1);
+                                index + 1);
                         }
                     }
                     continue;
@@ -318,25 +327,18 @@ namespace MultiFFBJoy
             return true;
         }
         bool PointInsideForceField(
+            const ForceField& field,
             LONG x,
-            LONG y,
-            const ForceField& field)
+            LONG y)
         {
             if (field.vertices.size() < 3)
                 return false;
-/*
-* Standard 2D point-in-polygon test.
-*
-* The .fff coordinates are already in the same
-* general [-10000,10000] coordinate space used by
-* DirectInput, so no transformation is required here.
-*/
             bool inside = false;
-            const size_t count =
-            field.vertices.size();
-            for (size_t i = 0, j = count - 1;
-                i < count;
-                j = i++)
+            size_t j =
+            field.vertices.size() - 1;
+            for (size_t i = 0;
+                i < field.vertices.size();
+                ++i)
             {
                 const LONG xi =
                 field.vertices[i].x;
@@ -348,63 +350,48 @@ namespace MultiFFBJoy
                 field.vertices[j].y;
                 const bool crosses =
                 ((yi > y) != (yj > y));
-                if (!crosses)
-                    continue;
-                const double intersectionX =
-                static_cast<double>(xj - xi) *
-                static_cast<double>(y - yi) /
-                static_cast<double>(yj - yi) +
-                static_cast<double>(xi);
-                if (static_cast<double>(x) <
-                    intersectionX)
+                if (crosses)
                 {
-                    inside = !inside;
+                    const double intersection =
+                    static_cast<double>(xj - xi) *
+                    static_cast<double>(y - yi) /
+                    static_cast<double>(yj - yi) +
+                    static_cast<double>(xi);
+                    if (static_cast<double>(x) < intersection)
+                    {
+                        inside = !inside;
+                    }
                 }
+                j = i;
             }
             return inside;
         }
-        int FindForceFieldAtPosition(
-            LONG x,
-            LONG y)
+        LONG NormalizeDirectInputAxis(
+            LONG value)
         {
-            std::lock_guard<std::mutex> lock(
-                g_presetMutex);
-            if (g_loadedPreset.forceFields.empty())
-                return -1;
-/*
-* Later forcefields are allowed to overlap earlier
-* ones. For this stage the first matching field wins,
-* which matches the ordering used by the supplied
-* Automatic/PRND preset.
-*/
-            for (size_t i = 0;
-                i < g_loadedPreset.forceFields.size();
-                ++i)
-            {
-                const ForceField& field =
-                g_loadedPreset.forceFields[i];
-/*
-* This stage intentionally only supports spring
-* forcefields.
-*
-* The supplied Automatic/PRND file uses:
-*
-*     FORCEFIELD TYPE=1
-*     FORCE TYPE=1
-*
-* Constant-force support is intentionally deferred.
-*/
-                if (field.forceType != 1)
-                    continue;
-                if (PointInsideForceField(
-                    x,
-                    y,
-                    field))
-                {
-                    return static_cast<int>(i);
-                }
-            }
-            return -1;
+// DirectInput joystick axes normally use
+// 0..65535 after SetProperty(DIPROP_RANGE).
+//
+// Convert that to FFShifter's
+// -10000..10000 coordinate system.
+            constexpr LONG DIRECT_INPUT_MIN = 0;
+            constexpr LONG DIRECT_INPUT_MAX = 65535;
+            value =
+            std::clamp(
+                value,
+                DIRECT_INPUT_MIN,
+                DIRECT_INPUT_MAX);
+            const double normalized =
+            (static_cast<double>(value) -
+                DIRECT_INPUT_MIN) /
+            static_cast<double>(
+                DIRECT_INPUT_MAX -
+                DIRECT_INPUT_MIN);
+            const double ff =
+            -10000.0 +
+            normalized * 20000.0;
+            return static_cast<LONG>(
+                std::lround(ff));
         }
         bool ReadFFBJoystickPosition(
             LONG& x,
@@ -417,8 +404,10 @@ namespace MultiFFBJoy
                 std::lock_guard<std::mutex> lock(
                     g_stateMutex);
                 device = g_ffbDevice;
-                xOffset = g_state.xAxisOffset;
-                yOffset = g_state.yAxisOffset;
+                xOffset =
+                g_state.xAxisOffset;
+                yOffset =
+                g_state.yAxisOffset;
             }
             if (device == nullptr)
                 return false;
@@ -429,194 +418,63 @@ namespace MultiFFBJoy
                 &state);
             if (FAILED(hr))
             {
-/*
-* The normal watchdog/reacquire mechanism owns
-* acquisition recovery. We simply report that
-* the current position could not be read.
-*/
+                if (hr == DIERR_INPUTLOST ||
+                    hr == DIERR_NOTACQUIRED)
+                {
+                    device->Acquire();
+                }
                 return false;
             }
-/*
-* DirectInput's common X/Y offsets are DIJOFS_X/Y.
-*
-* The selected device currently uses those logical
-* axis offsets. Keep the state lookup explicit rather
-* than assuming every future device has identical
-* physical axes.
-*/
+            LONG rawX = 32768;
+            LONG rawY = 32768;
             if (xOffset == DIJOFS_X)
             {
-                x = state.lX;
-            }
-            else
-            {
-                x = state.lX;
+                rawX = state.lX;
             }
             if (yOffset == DIJOFS_Y)
             {
-                y = state.lY;
+                rawY = state.lY;
             }
-            else
+// If the device is using the normal DirectInput
+// centered -32768..32767 range rather than our
+// explicit 0..65535 range, convert it first.
+//
+// SideWinder devices commonly expose centered
+// signed LONG values.
+            const auto convertAxis =
+            [](LONG value) -> LONG
             {
-                y = state.lY;
-            }
+                if (value >= -32768 &&
+                    value <= 32767)
+                {
+                    const double normalized =
+                    (static_cast<double>(value) +
+                        32768.0) /
+                    65535.0;
+                    return static_cast<LONG>(
+                        std::lround(
+                            -10000.0 +
+                            normalized * 20000.0));
+                }
+                return NormalizeDirectInputAxis(
+                    value);
+            };
+            x = convertAxis(rawX);
+            y = convertAxis(rawY);
             return true;
         }
-        bool GetCurrentPresetForceField(
-            int index,
-            ForceField& result)
+        void LogZoneSummary(
+            const FFBPreset& preset)
         {
-            std::lock_guard<std::mutex> lock(
-                g_presetMutex);
-            if (index < 0 ||
-                static_cast<size_t>(index) >=
-                g_loadedPreset.forceFields.size())
-            {
-                return false;
-            }
-            result =
-            g_loadedPreset.forceFields[
-                static_cast<size_t>(index)];
-            return true;
-        }
-        void PresetTestThreadMain()
-        {
-            int previousField = -1;
-            LONG previousX = 0;
-            LONG previousY = 0;
-            bool havePreviousPosition = false;
-            Log(
-                "Preset zone tracking started.");
-            while (g_presetTestRunning &&
-                g_running)
-            {
-/*
-* Make sure a preset is still loaded.
-*/
-                {
-                    std::lock_guard<std::mutex> lock(
-                        g_presetMutex);
-                    if (g_loadedPreset.forceFields.empty())
-                        break;
-                }
-                LONG x = 0;
-                LONG y = 0;
-                if (!ReadFFBJoystickPosition(
-                    x,
-                    y))
-                {
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(10));
-                    continue;
-                }
-/*
-* Avoid repeatedly logging identical positions.
-* The position itself is not used to update the
-* effect; only a zone transition is.
-*/
-                if (!havePreviousPosition ||
-                    x != previousX ||
-                    y != previousY)
-                {
-                    previousX = x;
-                    previousY = y;
-                    havePreviousPosition = true;
-                }
-                const int fieldIndex =
-                FindForceFieldAtPosition(
-                    x,
-                    y);
-                if (fieldIndex != previousField)
-                {
-                    if (fieldIndex < 0)
-                    {
-                        Logf(
-                            "Preset zone: none "
-                            "(stick X=%ld Y=%ld).",
-                            x,
-                            y);
-/*
-* Outside all zones, stop the spring
-* rather than leaving the previous gear
-* force active.
-*/
-                        StopSpring();
-                    }
-                    else
-                    {
-                        ForceField selected{};
-                        if (GetCurrentPresetForceField(
-                            fieldIndex,
-                            selected))
-                        {
-                            Logf(
-                                "Preset zone: \"%s\" "
-                                "(index=%d, X=%ld Y=%ld).",
-                                selected.name.c_str(),
-                                fieldIndex,
-                                x,
-                                y);
-                            if (!SetSpringForceField(
-                                selected))
-                            {
-                                Logf(
-                                    "Failed to apply "
-                                    "spring zone \"%s\".",
-                                    selected.name.c_str());
-                            }
-                        }
-                    }
-                    previousField = fieldIndex;
-                }
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(5));
-            }
-/*
-* Do not leave the last gear's spring active after
-* the preset test ends.
-*/
-            StopSpring();
-            Log(
-                "Preset zone tracking stopped.");
-        }
-    }
-    bool LoadForceFieldPreset(
-        const std::filesystem::path& path)
-    {
-        FFBPreset parsed;
-        parsed.path = path;
-        if (!ParseForceFieldFile(
-            path,
-            parsed))
-        {
-            return false;
-        }
-        {
-            std::lock_guard<std::mutex> lock(
-                g_presetMutex);
-            g_loadedPreset =
-            std::move(parsed);
-        }
-        Logf(
-            "Loaded forcefield preset: %s",
-            path.string().c_str());
-        {
-            std::lock_guard<std::mutex> lock(
-                g_presetMutex);
-            Logf(
-                "Forcefield preset contains %zu forcefield(s).",
-                g_loadedPreset.forceFields.size());
             for (size_t i = 0;
-                i < g_loadedPreset.forceFields.size();
+                i < preset.forceFields.size();
                 ++i)
             {
                 const ForceField& field =
-                g_loadedPreset.forceFields[i];
+                preset.forceFields[i];
                 Logf(
-                    "  Zone %zu: \"%s\" "
-                    "center=(%ld,%ld) "
-                    "vertices=%zu "
-                    "forceType=%d",
+                    "  Zone %zu: \"%s\" center=(%ld,%ld) "
+                    "vertices=%zu forceType=%d",
                     i,
                     field.name.c_str(),
                     field.centerX,
@@ -625,135 +483,166 @@ namespace MultiFFBJoy
                     field.forceType);
             }
         }
-        return true;
-    }
-    void ClearForceFieldPreset()
+} // anonymous namespace
+bool LoadForceFieldPreset(
+    const std::filesystem::path& path)
+{
+    FFBPreset parsed;
+    parsed.path =
+    path;
+    if (!ParseForceFieldFile(
+        path,
+        parsed))
     {
-        StopPresetTest();
-        {
-            std::lock_guard<std::mutex> lock(
-                g_presetMutex);
-            g_loadedPreset =
-            FFBPreset{};
-        }
-        Log("Forcefield preset cleared.");
+        return false;
     }
-    bool IsForceFieldPresetLoaded()
     {
-        std::lock_guard<std::mutex> lock(g_presetMutex);
-        return
-        !g_loadedPreset.path.empty() &&
-        !g_loadedPreset.forceFields.empty();
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_loadedPreset =
+        std::move(parsed);
     }
-    std::filesystem::path
-    GetLoadedForceFieldPresetPath()
+    Logf(
+        "Loaded forcefield preset: %s",
+        path.string().c_str());
     {
-        std::lock_guard<std::mutex> lock(g_presetMutex);
-        return g_loadedPreset.path;
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        Logf(
+            "Forcefield preset contains %zu forcefield(s).",
+            g_loadedPreset.forceFields.size());
+        LogZoneSummary(
+            g_loadedPreset);
     }
-    std::vector<std::filesystem::path>
-    EnumerateForceFieldPresets()
+    return true;
+}
+void ClearForceFieldPreset()
+{
     {
-        std::vector<std::filesystem::path> result;
-        const std::filesystem::path directory =
-        std::filesystem::current_path() /
-        "forcefields";
-        std::error_code ec;
-        if (!std::filesystem::exists(
-            directory,
-            ec))
-        {
-            return result;
-        }
-        for (const auto& entry :
-            std::filesystem::directory_iterator(
-                directory,
-                ec))
-        {
-            if (ec)
-                break;
-            if (!entry.is_regular_file(ec))
-                continue;
-            const auto extension =
-            entry.path().extension().wstring();
-            if (_wcsicmp(
-                extension.c_str(),
-                L".fff") == 0)
-            {
-                result.push_back(
-                    entry.path());
-            }
-        }
-        std::sort(
-            result.begin(),
-            result.end());
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_loadedPreset =
+        FFBPreset{};
+        g_presetTestState =
+        PresetTestState{};
+    }
+    StopSpring();
+    Log(
+        "Forcefield preset cleared.");
+}
+bool IsForceFieldPresetLoaded()
+{
+    std::lock_guard<std::mutex> lock(
+        g_presetMutex);
+    return
+    !g_loadedPreset.forceFields.empty();
+}
+std::filesystem::path
+GetLoadedForceFieldPresetPath()
+{
+    std::lock_guard<std::mutex> lock(
+        g_presetMutex);
+    return
+    g_loadedPreset.path;
+}
+std::vector<std::filesystem::path>
+EnumerateForceFieldPresets()
+{
+    std::vector<std::filesystem::path> result;
+    const std::filesystem::path directory =
+    std::filesystem::current_path() /
+    "forcefields";
+    std::error_code ec;
+    if (!std::filesystem::exists(
+        directory,
+        ec))
+    {
         return result;
     }
-    void StopPresetTest()
+    for (const auto& entry :
+        std::filesystem::directory_iterator(
+            directory,
+            ec))
     {
-        g_presetTestRunning = false;
-        if (g_presetTestThread.joinable())
+        if (ec)
+            break;
+        if (!entry.is_regular_file(ec))
+            continue;
+        const auto extension =
+        entry.path().extension().wstring();
+        if (_wcsicmp(
+            extension.c_str(),
+            L".fff") == 0)
         {
-            if (g_presetTestThread.get_id() !=
-                std::this_thread::get_id())
-            {
-                g_presetTestThread.join();
-            }
+            result.push_back(
+                entry.path());
         }
-        StopSpring();
-        {
-            std::lock_guard<std::mutex> lock(
-                g_presetMutex);
-            g_presetTestState =
-            PresetTestState{};
-        }
-        UpdateStatus();
-        Log(
-            "Preset test stopped.");
     }
-    void UpdatePresetTest()
-    {
-/*
-* Restart the zone tracker if it was already running.
-* This is important when the user loads a different
-* .fff while another preset is active.
-*/
-        g_presetTestRunning = false;
-        if (g_presetTestThread.joinable())
-        {
-            if (g_presetTestThread.get_id() !=
-                std::this_thread::get_id())
-            {
-                g_presetTestThread.join();
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lock(
-                g_presetMutex);
-            if (g_loadedPreset.forceFields.empty())
-            {
-                Log(
-                    "Preset test ignored: "
-                    "no forcefield preset is loaded.");
-                return;
-            }
-        }
-        if (!EnsureFFBDeviceReady())
-        {
-            Log(
-                "Preset test ignored: "
-                "FFB device unavailable.");
-            return;
-        }
-/*
-* Start the continuous joystick-position monitor.
-*/
-        g_presetTestRunning = true;
-        g_presetTestThread =
-        std::thread(
-            PresetTestThreadMain);
-        Log(
-            "Preset test enabled: "
-            "spring forcefield zones are now position-aware.");
-    }
+    std::sort(
+        result.begin(),
+        result.end());
+    return result;
 }
+int FindForceFieldAtPosition(
+    LONG x,
+    LONG y)
+{
+    std::lock_guard<std::mutex> lock(
+        g_presetMutex);
+    if (g_loadedPreset.forceFields.empty())
+        return -1;
+    for (size_t i = 0;
+        i < g_loadedPreset.forceFields.size();
+        ++i)
+    {
+        if (PointInsideForceField(
+            g_loadedPreset.forceFields[i],
+            x,
+            y))
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+void UpdatePresetTest()
+{
+    if (!IsForceFieldPresetLoaded())
+    {
+        Log(
+            "Preset test ignored: no preset loaded.");
+        return;
+    }
+    if (!EnsureFFBDeviceReady())
+    {
+        Log(
+            "Preset test ignored: FFB device unavailable.");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_presetTestState.enabled = true;
+        g_presetTestState.activeForceField = -1;
+        g_presetTestState.normalizedX = 0.0f;
+        g_presetTestState.normalizedY = 0.0f;
+    }
+    Log(
+        "Preset test enabled: spring forcefield zones "
+        "are now position-aware.");
+    Log(
+        "Preset zone tracking started.");
+}
+void StopPresetTest()
+{
+    {
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_presetTestState =
+        PresetTestState{};
+    }
+    StopSpring();
+    Log(
+        "Preset zone tracking stopped.");
+}
+} // namespace MultiFFBJoy
