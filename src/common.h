@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -68,10 +69,43 @@ namespace MultiFFBJoy
         DWORD springDynamicParams = 0;
         std::vector<DWORD> ffbActuatorOffsets;
     };
+    struct ForceFieldVertex
+    {
+        LONG x = 0;
+        LONG y = 0;
+        LONG z = 0;
+    };
+    struct ForceField
+    {
+        std::string name;
+        int type = 0;
+        int shapeType = 0;
+        LONG centerX = 0;
+        LONG centerY = 0;
+        LONG centerZ = 0;
+        std::vector<ForceFieldVertex> vertices;
+        int forceType = 0;
+        int primaryKeyIndex = -1;
+        int secondaryKeyIndex = -1;
+        int primarySequentialGearValue = -1;
+        int secondarySequentialGearValue = -1;
+        LONG powerX = 0;
+        LONG powerY = 0;
+        LONG offsetX = 0;
+        LONG offsetY = 0;
+    };
+    struct FFBPreset
+    {
+        std::string fileVersion;
+        std::string name;
+        std::vector<ForceField> forceFields;
+        bool valid = false;
+    };
     extern std::vector<DeviceCandidate> g_candidates;
-// Logging is implemented by gui.cpp.
+    extern FFBPreset g_activePreset;
+    extern std::mutex g_presetMutex;
     void Log(const std::string& text);
-template <typename... Args>
+    template <typename... Args>
     void Logf(const char* format, Args... args)
     {
         char buffer[2048]{};
@@ -79,16 +113,16 @@ template <typename... Args>
         Log(buffer);
     }
     std::wstring Utf8ToWide(const char* text);
-// GUI
+    // GUI
     bool CreateMainWindow(HINSTANCE instance, int showCommand);
     int RunMessageLoop();
     void DestroyMainWindow();
     void UpdateStatus();
-// UDP
+    // UDP
     bool StartUdpServer();
     void StopUdpServer();
     void SendUdpCommand(const std::string& command);
-// FFB
+    // FFB
     bool CreateSpringEffect();
     bool CreateTestConstantForceEffect();
     bool IsFFBDeviceUsable();
@@ -101,9 +135,13 @@ template <typename... Args>
     bool ReacquireFFBDevice();
     void StartFFBWatchdog();
     void StopFFBWatchdog();
-// Device
+    // Presets
+    bool LoadFFBPreset(const std::string& path);
+    void ClearFFBPreset();
+    const ForceField* FindForceFieldByName(const std::string& name);
+    // Device
     bool InitializeDirectInput(HINSTANCE instance);
     void ShutdownDirectInput();
     bool SelectFirstSuitableDevice();
     void ReleaseFFBDevice();
-} // namespace MultiFFBJoy
+}
