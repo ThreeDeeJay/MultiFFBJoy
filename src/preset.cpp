@@ -422,9 +422,8 @@ namespace MultiFFBJoy
 bool LoadForceFieldPreset(
     const std::filesystem::path& path)
 {
-    FFBPreset parsed;
-    parsed.path =
-    path;
+    ForceFieldPreset parsed;
+    parsed.path = path;
     if (!ParseForceFieldFile(
         path,
         parsed))
@@ -446,8 +445,22 @@ bool LoadForceFieldPreset(
         Logf(
             "Forcefield preset contains %zu forcefield(s).",
             g_loadedPreset.forceFields.size());
-        LogZoneSummary(
-            g_loadedPreset);
+        for (size_t i = 0;
+            i < g_loadedPreset.forceFields.size();
+            ++i)
+        {
+            const auto& field =
+            g_loadedPreset.forceFields[i];
+            Logf(
+                "  Zone %zu: \"%s\" center=(%ld,%ld) "
+                "vertices=%zu forceType=%d",
+                i,
+                field.name.c_str(),
+                field.centerX,
+                field.centerY,
+                field.vertices.size(),
+                field.forceType);
+        }
     }
     return true;
 }
@@ -469,8 +482,7 @@ bool IsForceFieldPresetLoaded()
 {
     std::lock_guard<std::mutex> lock(
         g_presetMutex);
-    return
-    !g_loadedPreset.forceFields.empty();
+    return !g_loadedPreset.forceFields.empty();
 }
 std::filesystem::path
 GetLoadedForceFieldPresetPath()
