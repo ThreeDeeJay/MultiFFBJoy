@@ -4,8 +4,6 @@
 #include <sstream>
 namespace MultiFFBJoy
 {
-    std::mutex g_presetMutex;
-    ForceFieldPreset g_loadedPreset;
     namespace
     {
         std::string Trim(
@@ -14,7 +12,9 @@ namespace MultiFFBJoy
             const auto first =
             value.find_first_not_of(" \t\r\n");
             if (first == std::string::npos)
+            {
                 return {};
+            }
             const auto last =
             value.find_last_not_of(" \t\r\n");
             return value.substr(
@@ -40,16 +40,24 @@ namespace MultiFFBJoy
             const std::string& value,
             LONG& result)
         {
+            const std::string trimmed =
+            Trim(value);
+            if (trimmed.empty())
+            {
+                return false;
+            }
             try
             {
                 size_t used = 0;
                 const long parsed =
                 std::stol(
-                    Trim(value),
+                    trimmed,
                     &used,
                     10);
-                if (used != Trim(value).size())
+                if (used != trimmed.size())
+                {
                     return false;
+                }
                 result =
                 static_cast<LONG>(parsed);
                 return true;
@@ -65,7 +73,9 @@ namespace MultiFFBJoy
         {
             LONG temp = 0;
             if (!ParseLong(value, temp))
+            {
                 return false;
+            }
             result =
             static_cast<int>(temp);
             return true;
@@ -108,7 +118,9 @@ namespace MultiFFBJoy
             {
                 return false;
             }
-            return ParseLong(text, value);
+            return ParseLong(
+                text,
+                value);
         }
         bool ParseIntegerField(
             const std::string& line,
@@ -123,7 +135,9 @@ namespace MultiFFBJoy
             {
                 return false;
             }
-            return ParseInt(text, value);
+            return ParseInt(
+                text,
+                value);
         }
         bool IsForceFieldNameLine(
             const std::string& line)
@@ -136,17 +150,21 @@ namespace MultiFFBJoy
             const std::string& line)
         {
             if (line.empty())
+            {
                 return false;
+            }
             for (const char ch : line)
             {
                 if (ch != '*')
+                {
                     return false;
+                }
             }
             return true;
         }
         bool ParseForceFieldFile(
             const std::filesystem::path& path,
-            ForceFieldPreset& preset)
+            FFBPreset& preset)
         {
             std::ifstream file(
                 path,
@@ -154,7 +172,7 @@ namespace MultiFFBJoy
             if (!file)
             {
                 Logf(
-                    "Could not open forcefield preset: %s",
+                    "Could not open forcefield file: %s",
                     path.string().c_str());
                 return false;
             }
@@ -165,16 +183,20 @@ namespace MultiFFBJoy
             {
                 line = Trim(line);
                 if (line.empty())
+                {
                     continue;
+                }
                 if (IsSeparator(line))
+                {
                     continue;
+                }
                 std::string value;
                 if (ParseString(
                     line,
                     "FORCEFIELDS FILE VERSION",
                     value))
                 {
-                    preset.version = value;
+                    preset.fileVersion = value;
                     continue;
                 }
                 LONG ignoredCount = 0;
@@ -201,15 +223,20 @@ namespace MultiFFBJoy
                     continue;
                 }
                 if (!haveCurrent)
+                {
                     continue;
+                }
+// FORCEFIELD TYPE
                 ParseIntegerField(
                     line,
                     "FORCEFIELD TYPE",
-                    current.forceFieldType);
+                    current.type);
+// FORCEFIELD SHAPE TYPE
                 ParseIntegerField(
                     line,
                     "FORCEFIELD SHAPE TYPE",
                     current.shapeType);
+// FORCEFIELD CENTER
                 ParseIntegerField(
                     line,
                     "FORCEFIELD CENTER X",
@@ -222,6 +249,7 @@ namespace MultiFFBJoy
                     line,
                     "FORCEFIELD CENTER Z",
                     current.centerZ);
+// Vertex records
                 int vertexIndex = -1;
                 if (ParseIntegerField(
                     line,
@@ -230,19 +258,19 @@ namespace MultiFFBJoy
                 {
                     if (vertexIndex >= 0)
                     {
-                        if (current.vertices.size() <=
-                            static_cast<size_t>(vertexIndex))
+                        const size_t requiredSize =
+                        static_cast<size_t>(
+                            vertexIndex) +
+                        1;
+                        if (current.vertices.size() <
+                            requiredSize)
                         {
                             current.vertices.resize(
-                                static_cast<size_t>(
-                                    vertexIndex) +
-                                1);
+                                requiredSize);
                         }
                     }
                     continue;
                 }
-                // Vertex coordinates are associated with the most
-                // recently declared vertex index.
                 if (!current.vertices.empty())
                 {
                     auto& vertex =
@@ -260,6 +288,7 @@ namespace MultiFFBJoy
                         "FORCEFIELD VERTEX Z",
                         vertex.z);
                 }
+// Force parameters
                 ParseIntegerField(
                     line,
                     "FORCE TYPE",
@@ -315,7 +344,7 @@ namespace MultiFFBJoy
     bool LoadForceFieldPreset(
         const std::filesystem::path& path)
     {
-        ForceFieldPreset parsed;
+        FFBPreset parsed;
         parsed.path = path;
         if (!ParseForceFieldFile(
             path,
@@ -323,22 +352,27 @@ namespace MultiFFBJoy
         {
             return false;
         }
-        parsed.loaded = true;
         {
             std::lock_guard<std::mutex> lock(
                 g_presetMutex);
             g_loadedPreset =
             std::move(parsed);
         }
-        Logf(
-            "Loaded forcefield preset: %s",
-            path.string().c_str());
         {
             std::lock_guard<std::mutex> lock(
                 g_presetMutex);
             Logf(
+                "Loaded forcefield preset: %s",
+                g_loadedPreset.path.string().c_str());
+            Logf(
                 "Forcefield preset contains %zu forcefield(s).",
                 g_loadedPreset.forceFields.size());
+            if (!g_loadedPreset.fileVersion.empty())
+            {
+                Logf(
+                    "Forcefields file version: %s",
+                    g_loadedPreset.fileVersion.c_str());
+            }
         }
         return true;
     }
@@ -348,14 +382,19 @@ namespace MultiFFBJoy
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
         g_loadedPreset =
-        ForceFieldPreset{};
-        Log("Forcefield preset cleared.");
+        FFBPreset{};
+        g_presetTestState =
+        PresetTestState{};
+        Log(
+            "Forcefield preset cleared.");
     }
     bool IsForceFieldPresetLoaded()
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
-        return g_loadedPreset.loaded;
+        return
+        !g_loadedPreset.path.empty() &&
+        !g_loadedPreset.forceFields.empty();
     }
     std::filesystem::path
     GetLoadedForceFieldPresetPath()
@@ -364,10 +403,10 @@ namespace MultiFFBJoy
             g_presetMutex);
         return g_loadedPreset.path;
     }
-    std::vector<std::filesystem::path>
+    std::vector<PresetInfo>
     EnumerateForceFieldPresets()
     {
-        std::vector<std::filesystem::path> result;
+        std::vector<PresetInfo> result;
         const std::filesystem::path directory =
         std::filesystem::current_path() /
         "forcefields";
@@ -376,31 +415,50 @@ namespace MultiFFBJoy
             directory,
             ec))
         {
+            Logf(
+                "Forcefields directory does not exist: %s",
+                directory.string().c_str());
             return result;
         }
-        for (
-            const auto& entry :
+        for (const auto& entry :
             std::filesystem::directory_iterator(
                 directory,
                 ec))
         {
             if (ec)
+            {
                 break;
+            }
             if (!entry.is_regular_file(ec))
+            {
                 continue;
+            }
             const auto extension =
             entry.path().extension().wstring();
             if (_wcsicmp(
                 extension.c_str(),
-                L".fff") == 0)
+                L".fff") != 0)
             {
-                result.push_back(
-                    entry.path());
+                continue;
             }
+            PresetInfo info;
+            info.path =
+            entry.path();
+            info.displayName =
+            entry.path().filename().wstring();
+            result.push_back(
+                std::move(info));
         }
         std::sort(
             result.begin(),
-            result.end());
+            result.end(),
+            [](const PresetInfo& a,
+                const PresetInfo& b)
+            {
+                return _wcsicmp(
+                    a.displayName.c_str(),
+                    b.displayName.c_str()) < 0;
+            });
         return result;
     }
     void StopPresetTest()
@@ -416,6 +474,14 @@ namespace MultiFFBJoy
             g_state.springStrength = 0.0f;
             g_state.springPersistent = false;
         }
+        {
+            std::lock_guard<std::mutex> lock(
+                g_presetMutex);
+            g_presetTestState.enabled = false;
+            g_presetTestState.activeForceField = -1;
+            g_presetTestState.normalizedX = 0.0f;
+            g_presetTestState.normalizedY = 0.0f;
+        }
         UpdateStatus();
     }
     void UpdatePresetTest()
@@ -424,20 +490,19 @@ namespace MultiFFBJoy
         {
             std::lock_guard<std::mutex> lock(
                 g_presetMutex);
-            if (!g_loadedPreset.loaded ||
-                g_loadedPreset.forceFields.empty())
+            if (g_loadedPreset.forceFields.empty())
             {
                 Log(
                     "Preset test ignored: "
                     "no forcefield preset is loaded.");
                 return;
             }
-            // Stage 1 test behavior:
-            // test the first forcefield in the file.
-            //
-            // Automatic PRND zone selection comes later.
+// Stage 1: test the first forcefield
+// contained in the selected .fff file.
             selectedField =
             g_loadedPreset.forceFields.front();
+            g_presetTestState.enabled = true;
+            g_presetTestState.activeForceField = 0;
         }
         if (!EnsureFFBDeviceReady())
         {
@@ -456,16 +521,5 @@ namespace MultiFFBJoy
         Logf(
             "Preset test active: \"%s\".",
             selectedField.name.c_str());
-    }
-    void RefreshPresetList()
-    {
-        // GUI implementation belongs in gui.cpp.
-        // This declaration exists so the preset subsystem
-        // can be expanded without coupling parsing to HWNDs.
-    }
-    bool LoadSelectedPresetFromGui()
-    {
-        // GUI implementation belongs in gui.cpp.
-        return false;
     }
 }
