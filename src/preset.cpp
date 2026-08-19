@@ -540,6 +540,117 @@ int FindForceFieldAtPosition(
     }
     return -1;
 }
+namespace
+{
+    void PresetTestThreadProc()
+    {
+        Log(
+            "Preset zone tracking thread started.");
+        int lastZone = -2;
+        while (g_presetTestRunning.load())
+        {
+            bool enabled = false;
+            {
+                std::lock_guard<std::mutex> lock(
+                    g_presetMutex);
+                enabled =
+                g_presetTestState.enabled;
+            }
+            if (!enabled)
+            {
+                break;
+            }
+            LONG x = 0;
+            LONG y = 0;
+            if (!ReadFFBJoystickPosition(x, y))
+            {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
+                continue;
+            }
+            const int zone =
+            FindForceFieldAtPosition(x, y);
+            if (zone != lastZone)
+            {
+                lastZone = zone;
+                if (zone >= 0)
+                {
+                    ForceField selectedField;
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            g_presetMutex);
+                        if (zone <
+                            static_cast<int>(
+                                g_loadedPreset.forceFields.size()))
+                        {
+                            selectedField =
+                            g_loadedPreset.forceFields[
+                                static_cast<size_t>(zone)];
+                            g_presetTestState
+                            .activeForceField =
+                            zone;
+                        }
+                        else
+                        {
+                            lastZone = -1;
+                        }
+                    }
+                    if (lastZone >= 0)
+                    {
+                        Logf(
+                            "Preset zone: \"%s\" "
+                            "(index=%d, X=%ld Y=%ld).",
+                            selectedField.name.c_str(),
+                            zone,
+                            x,
+                            y);
+                        if (selectedField.forceType == 1)
+                        {
+                            if (!SetSpringForceField(
+                                selectedField))
+                            {
+                                Logf(
+                                    "Failed to apply spring "
+                                    "forcefield \"%s\".",
+                                    selectedField.name.c_str());
+                            }
+                        }
+                        else
+                        {
+                            Logf(
+                                "Preset zone \"%s\" uses "
+                                "unsupported force type %d; "
+                                "stopping spring.",
+                                selectedField.name.c_str(),
+                                selectedField.forceType);
+                            StopSpring();
+                        }
+                    }
+                }
+                else
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            g_presetMutex);
+                        g_presetTestState
+                        .activeForceField = -1;
+                    }
+                    Logf(
+                        "Preset zone: none "
+                        "(stick X=%ld Y=%ld).",
+                        x,
+                        y);
+                    StopSpring();
+                }
+            }
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(10));
+        }
+        StopSpring();
+        Log(
+            "Preset zone tracking thread stopped.");
+    }
+}
 void UpdatePresetTest()
 {
     if (!IsForceFieldPresetLoaded())
@@ -554,6 +665,14 @@ void UpdatePresetTest()
             "Preset test ignored: FFB device unavailable.");
         return;
     }
+/*
+* Stop an existing monitor before starting a new one.
+*/
+    g_presetTestRunning.store(false);
+    if (g_presetTestThread.joinable())
+    {
+        g_presetTestThread.join();
+    }
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
@@ -562,9 +681,13 @@ void UpdatePresetTest()
         g_presetTestState.normalizedX = 0.0f;
         g_presetTestState.normalizedY = 0.0f;
     }
+    g_presetTestRunning.store(true);
+    g_presetTestThread =
+    std::thread(
+        PresetTestThreadProc);
     Log(
-        "Preset test enabled: spring forcefield zones "
-        "are now position-aware.");
+        "Preset test enabled: spring forcefield "
+        "zones are now position-aware.");
     Log(
         "Preset zone tracking started.");
 }
@@ -638,6 +761,11 @@ void StopPresetTest()
             g_presetMutex);
         g_presetTestState =
         PresetTestState{};
+    }
+    g_presetTestRunning.store(false);
+    if (g_presetTestThread.joinable())
+    {
+        g_presetTestThread.join();
     }
     StopSpring();
     Log(
