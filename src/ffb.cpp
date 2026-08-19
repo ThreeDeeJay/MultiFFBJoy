@@ -3,14 +3,24 @@ namespace MultiFFBJoy
 {
     bool CreateSpringEffect()
     {
-        if (!IsFFBDeviceUsable())
+        if (g_ffbDevice == nullptr)
+        {
+            Log("CreateSpringEffect: no FFB device.");
             return false;
+        }
         if (g_springEffect != nullptr)
         {
             g_springEffect->Stop();
             g_springEffect->Release();
             g_springEffect = nullptr;
         }
+        DICONDITION condition{};
+        condition.lOffset = 0;
+        condition.lPositiveCoefficient = 10000;
+        condition.lNegativeCoefficient = 10000;
+        condition.dwPositiveSaturation = 10000;
+        condition.dwNegativeSaturation = 10000;
+        condition.lDeadBand = 0;
         DWORD axes[2] =
         {
             DIJOFS_X,
@@ -21,52 +31,45 @@ namespace MultiFFBJoy
             0,
             0
         };
-        DICONDITION conditions[2]{};
-        for (int i = 0; i < 2; ++i)
+        DICONDITION conditions[2] =
         {
-            conditions[i].lOffset = 0;
-            conditions[i].lPositiveCoefficient =
-            DI_FFNOMINALMAX;
-            conditions[i].lNegativeCoefficient =
-            DI_FFNOMINALMAX;
-            conditions[i].dwPositiveSaturation =
-            DI_FFNOMINALMAX;
-            conditions[i].dwNegativeSaturation =
-            DI_FFNOMINALMAX;
-            conditions[i].lDeadBand = 0;
-        }
-        DIEFFECT effectParameters{};
-        effectParameters.dwSize =
-        sizeof(DIEFFECT);
-        effectParameters.dwFlags =
+            condition,
+            condition
+        };
+        DIEFFECT effect{};
+        effect.dwSize = sizeof(DIEFFECT);
+        effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
-        effectParameters.cAxes = 2;
-        effectParameters.rgdwAxes =
-        axes;
-        effectParameters.rglDirection =
-        directions;
-        effectParameters.cbTypeSpecificParams =
-        sizeof(conditions);
-        effectParameters.lpvTypeSpecificParams =
+        effect.dwDuration = INFINITE;
+        effect.dwSamplePeriod = 0;
+        effect.dwGain = DI_FFNOMINALMAX;
+        effect.dwTriggerButton = DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval = 0;
+        effect.cAxes = 2;
+        effect.rgdwAxes = axes;
+        effect.rglDirection = directions;
+        effect.lpEnvelope = nullptr;
+        effect.cbTypeSpecificParams =
+        sizeof(DICONDITION) * 2;
+        effect.lpvTypeSpecificParams =
         conditions;
+        effect.dwStartDelay = 0;
         HRESULT hr =
         g_ffbDevice->CreateEffect(
             GUID_Spring,
-            &effectParameters,
+            &effect,
             &g_springEffect,
             nullptr);
         if (FAILED(hr))
         {
             Logf(
-                "CreateEffect(GUID_Spring) failed: "
-                "HRESULT=0x%08lX",
+                "CreateEffect(GUID_Spring) failed: HRESULT=0x%08lX",
                 static_cast<unsigned long>(hr));
             g_springEffect = nullptr;
             return false;
         }
-        Log(
-            "Two-axis DirectInput spring effect created.");
+        Log("Spring effect created successfully.");
         return true;
     }
     bool CreateTestConstantForceEffect()
