@@ -18,7 +18,6 @@ namespace MultiFFBJoy
     DeviceState g_state;
     std::vector<DeviceCandidate> g_candidates;
     std::vector<PresetInfo> g_availablePresets;
-    PresetTestState g_presetTestState;
 }
 using namespace MultiFFBJoy;
 int APIENTRY wWinMain(
