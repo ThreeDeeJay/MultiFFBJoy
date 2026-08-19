@@ -280,6 +280,132 @@ namespace MultiFFBJoy
             strength);
         return true;
     }
+    bool SetSpringForceField(
+        const ForceField& forceField)
+    {
+        if (g_ffbDevice == nullptr || g_springEffect == nullptr)
+        {
+            Log(
+                "SetSpringForceField: FFB device/effect unavailable.");
+            return false;
+        }
+        if (forceField.forceType != 1 &&
+            forceField.forceFieldType != 1)
+        {
+            Logf(
+                "SetSpringForceField: forcefield \"%s\" is not a spring.",
+                forceField.name.c_str());
+            return false;
+        }
+        LONG powerX = std::clamp<LONG>(
+            forceField.powerX,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+        LONG powerY = std::clamp<LONG>(
+            forceField.powerY,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+    // FFShifter stores the spring power in the forcefield.
+    //
+    // DirectInput's spring coefficients use the nominal force range.
+    // Convert the FFShifter values into normalized spring coefficients.
+        const LONG normalizedX =
+        std::clamp<LONG>(
+            std::abs(powerX),
+            0,
+            DI_FFNOMINALMAX);
+        const LONG normalizedY =
+        std::clamp<LONG>(
+            std::abs(powerY),
+            0,
+            DI_FFNOMINALMAX);
+        DICONDITION conditions[2]{};
+        conditions[0].lOffset =
+        std::clamp<LONG>(
+            forceField.offsetX,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+        conditions[1].lOffset =
+        std::clamp<LONG>(
+            forceField.offsetY,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+        conditions[0].lPositiveCoefficient = normalizedX;
+        conditions[0].lNegativeCoefficient = normalizedX;
+        conditions[1].lPositiveCoefficient = normalizedY;
+        conditions[1].lNegativeCoefficient = normalizedY;
+        conditions[0].dwPositiveSaturation = DI_FFNOMINALMAX;
+        conditions[0].dwNegativeSaturation = DI_FFNOMINALMAX;
+        conditions[1].dwPositiveSaturation = DI_FFNOMINALMAX;
+        conditions[1].dwNegativeSaturation = DI_FFNOMINALMAX;
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
+        DIEFFECT effect{};
+        effect.dwSize = sizeof(DIEFFECT);
+        effect.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        effect.cAxes = 2;
+        effect.rgdwAxes = axes;
+        effect.rglDirection = directions;
+        effect.cbTypeSpecificParams =
+        sizeof(conditions);
+        effect.lpvTypeSpecificParams =
+        conditions;
+        HRESULT hr =
+        g_springEffect->SetParameters(
+            &effect,
+            DIEP_TYPESPECIFICPARAMS |
+            DIEP_DIRECTION |
+            DIEP_START);
+        if (FAILED(hr))
+        {
+            Logf(
+                "SetSpringForceField: SetParameters failed: "
+                "0x%08lX",
+                static_cast<unsigned long>(hr));
+            if (hr == DIERR_INPUTLOST ||
+                hr == DIERR_NOTACQUIRED ||
+                hr == DIERR_NOTEXCLUSIVEACQUIRED)
+            {
+                Log(
+                    "SetSpringForceField: spring effect lost "
+                    "device access.");
+            }
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+        // Keep the GUI/status representation meaningful.
+            const float strengthX =
+            static_cast<float>(normalizedX) /
+            static_cast<float>(DI_FFNOMINALMAX);
+            const float strengthY =
+            static_cast<float>(normalizedY) /
+            static_cast<float>(DI_FFNOMINALMAX);
+            g_state.springStrength =
+            std::max(strengthX, strengthY);
+            g_state.springPersistent = true;
+        }
+        UpdateStatus();
+        Logf(
+            "Spring forcefield \"%s\" started "
+            "(offset=%ld,%ld power=%ld,%ld).",
+            forceField.name.c_str(),
+            forceField.offsetX,
+            forceField.offsetY,
+            forceField.powerX,
+            forceField.powerY);
+        return true;
+    }
     bool SetTestConstantForce(LONG x, LONG y)
     {
         if (g_ffbDevice == nullptr || g_testConstantEffect == nullptr)
@@ -566,8 +692,8 @@ namespace MultiFFBJoy
         constexpr int RETRY_COUNT = 3;
         constexpr DWORD RETRY_DELAY_MS = 50;
         for (int attempt = 1;
-         attempt <= RETRY_COUNT;
-         ++attempt)
+           attempt <= RETRY_COUNT;
+           ++attempt)
         {
             if (g_reacquiring.load(std::memory_order_acquire))
             {
