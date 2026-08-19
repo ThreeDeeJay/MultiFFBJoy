@@ -422,7 +422,7 @@ namespace MultiFFBJoy
 bool LoadForceFieldPreset(
     const std::filesystem::path& path)
 {
-    ForceFieldPreset parsed;
+    FFBPreset parsed;
     parsed.path = path;
     if (!ParseForceFieldFile(
         path,
