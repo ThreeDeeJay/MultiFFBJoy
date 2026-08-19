@@ -300,106 +300,129 @@ namespace MultiFFBJoy
     bool SetSpringForceField(
         const ForceField& forceField)
     {
-        if (!EnsureFFBDeviceReady())
+        if (g_ffbDevice == nullptr ||
+            g_springEffect == nullptr)
         {
             Log(
-                "SetSpringForceField: "
-                "FFB device is not ready.");
+                "SetSpringForceField: spring effect unavailable.");
             return false;
         }
-        IDirectInputEffect* effect = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(
-                g_stateMutex);
-            effect = g_springEffect;
-        }
-        if (effect == nullptr)
-        {
-            Log(
-                "SetSpringForceField: "
-                "spring effect does not exist.");
-            return false;
-        }
-/*
-* The supplied FFShifter .fff files use FORCE TYPE=1
-* for their spring zones.
-*
-* DirectInput represents a spring/conditional force with
-* DICONDITION parameters:
-*
-*   lOffset
-*   lPositiveCoefficient
-*   lNegativeCoefficient
-*   dwPositiveSaturation
-*   dwNegativeSaturation
-*   lDeadBand
-*
-* FFShifter's forcefield data gives us:
-*
-*   POWER X/Y
-*   OFFSET X/Y
-*
-* For this stage we map the X/Y forcefield values directly
-* into the corresponding DirectInput conditional axes.
-*/
         DICONDITION conditions[2]{};
+// FFShifter forcefield center becomes the
+// DirectInput spring offset.
         conditions[0].lOffset =
-        forceField.offsetX;
-        conditions[0].lPositiveCoefficient =
-        forceField.powerX;
-        conditions[0].lNegativeCoefficient =
-        forceField.powerX;
-        conditions[0].dwPositiveSaturation =
-        DI_FFNOMINALMAX;
-        conditions[0].dwNegativeSaturation =
-        DI_FFNOMINALMAX;
-        conditions[0].lDeadBand = 0;
+        std::clamp(
+            forceField.centerX,
+            FFB_COORD_MIN,
+            FFB_COORD_MAX);
         conditions[1].lOffset =
-        forceField.offsetY;
-        conditions[1].lPositiveCoefficient =
-        forceField.powerY;
-        conditions[1].lNegativeCoefficient =
-        forceField.powerY;
-        conditions[1].dwPositiveSaturation =
-        DI_FFNOMINALMAX;
-        conditions[1].dwNegativeSaturation =
-        DI_FFNOMINALMAX;
-        conditions[1].lDeadBand = 0;
-        DWORD axes[2]{};
+        std::clamp(
+            forceField.centerY,
+            FFB_COORD_MIN,
+            FFB_COORD_MAX);
+//
+// Power controls stiffness/direction.
+//
+// FFShifter uses signed power values.
+// DirectInput separates positive and negative
+// coefficients.
+//
+        const LONG powerX =
+        std::clamp(
+            std::abs(forceField.powerX),
+            0L,
+            10000L);
+        const LONG powerY =
+        std::clamp(
+            std::abs(forceField.powerY),
+            0L,
+            10000L);
+        if (forceField.powerX >= 0)
         {
-            std::lock_guard<std::mutex> lock(
-                g_stateMutex);
-            axes[0] =
-            g_state.xAxisOffset;
-            axes[1] =
-            g_state.yAxisOffset;
+            conditions[0].lPositiveCoefficient =
+            powerX;
+            conditions[0].lNegativeCoefficient =
+            powerX;
         }
-        DIEFFECT effectParameters{};
-        effectParameters.dwSize =
+        else
+        {
+            conditions[0].lPositiveCoefficient =
+            -powerX;
+            conditions[0].lNegativeCoefficient =
+            -powerX;
+        }
+        if (forceField.powerY >= 0)
+        {
+            conditions[1].lPositiveCoefficient =
+            powerY;
+            conditions[1].lNegativeCoefficient =
+            powerY;
+        }
+        else
+        {
+            conditions[1].lPositiveCoefficient =
+            -powerY;
+            conditions[1].lNegativeCoefficient =
+            -powerY;
+        }
+        conditions[0].dwPositiveSaturation =
+        static_cast<DWORD>(powerX);
+        conditions[0].dwNegativeSaturation =
+        static_cast<DWORD>(powerX);
+        conditions[1].dwPositiveSaturation =
+        static_cast<DWORD>(powerY);
+        conditions[1].dwNegativeSaturation =
+        static_cast<DWORD>(powerY);
+        conditions[0].lDeadBand = 0;
+        conditions[1].lDeadBand = 0;
+        const DWORD axes[2] =
+        {
+            g_state.xAxisOffset,
+            g_state.yAxisOffset
+        };
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
+        DIEFFECT effect{};
+        effect.dwSize =
         sizeof(DIEFFECT);
-        effectParameters.dwFlags =
+        effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
-        effectParameters.cAxes = 2;
-        effectParameters.rgdwAxes =
-        axes;
-        effectParameters.lpEnvelope =
+        effect.dwDuration =
+        INFINITE;
+        effect.dwSamplePeriod =
+        0;
+        effect.dwGain =
+        DI_FFNOMINALMAX;
+        effect.dwTriggerButton =
+        DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval =
+        0;
+        effect.cAxes =
+        2;
+        effect.rgdwAxes =
+        const_cast<DWORD*>(axes);
+        effect.rglDirection =
+        directions;
+        effect.lpEnvelope =
         nullptr;
-        effectParameters.cbTypeSpecificParams =
+        effect.cbTypeSpecificParams =
         sizeof(conditions);
-        effectParameters.lpvTypeSpecificParams =
+        effect.lpvTypeSpecificParams =
         conditions;
-/*
-* The spring effect already exists and is being updated
-* in-place. This is what lets us switch Park -> Reverse
-* -> Neutral -> Drive without recreating the DirectInput
-* effect every time the joystick crosses a zone.
-*/
+        effect.dwStartDelay =
+        0;
         HRESULT hr =
-        effect->SetParameters(
-            &effectParameters,
+        g_springEffect->SetParameters(
+            &effect,
             DIEP_TYPESPECIFICPARAMS |
-            DIEP_START);
+            DIEP_AXES |
+            DIEP_DIRECTION |
+            DIEP_START |
+            DIEP_GAIN);
         if (FAILED(hr))
         {
             Logf(
@@ -412,34 +435,26 @@ namespace MultiFFBJoy
         {
             std::lock_guard<std::mutex> lock(
                 g_stateMutex);
-/*
-* Use the larger of the absolute X/Y power values
-* for the existing status display.
-*/
-            const float xStrength =
-            static_cast<float>(
-                std::abs(forceField.powerX)) /
-            static_cast<float>(
-                DI_FFNOMINALMAX);
-            const float yStrength =
-            static_cast<float>(
-                std::abs(forceField.powerY)) /
-            static_cast<float>(
-                DI_FFNOMINALMAX);
             g_state.springStrength =
-            std::max(
-                xStrength,
-                yStrength);
+            static_cast<float>(
+                std::max(
+                {
+                    powerX,
+                    powerY
+                })) /
+            10000.0f;
             g_state.springPersistent =
             true;
             g_state.lastCommand =
             std::chrono::steady_clock::now();
         }
-        UpdateStatus();
         Logf(
             "Applied spring forcefield \"%s\": "
-            "power=(%ld,%ld), offset=(%ld,%ld).",
+            "center=(%ld,%ld), power=(%ld,%ld), "
+            "offset=(%ld,%ld).",
             forceField.name.c_str(),
+            forceField.centerX,
+            forceField.centerY,
             forceField.powerX,
             forceField.powerY,
             forceField.offsetX,
