@@ -17,7 +17,6 @@ namespace MultiFFBJoy
     std::mutex g_stateMutex;
     DeviceState g_state;
     std::vector<DeviceCandidate> g_candidates;
-    PresetTestState g_presetTestState;
 }
 using namespace MultiFFBJoy;
 int APIENTRY wWinMain(
