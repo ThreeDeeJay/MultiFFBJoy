@@ -694,7 +694,7 @@ int FindForceFieldAtPosition(
 {
     std::lock_guard<std::mutex> lock(
         g_presetMutex);
-    if (!g_loadedPreset.loaded)
+    if (g_loadedPreset.forceFields.empty())
         return -1;
 /*
 * The .fff coordinates and the joystick coordinates
