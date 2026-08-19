@@ -53,6 +53,7 @@ int APIENTRY wWinMain(
         Log(
             "UDP server could not be started.");
     }
+    PopulatePresetList();
     RunMessageLoop();
     StopUdpServer();
     g_running = false;
