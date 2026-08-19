@@ -80,30 +80,39 @@ namespace MultiFFBJoy
         std::string name;
         int type = 0;
         int shapeType = 0;
+        int forceType = 0;
         LONG centerX = 0;
         LONG centerY = 0;
         LONG centerZ = 0;
-        std::vector<ForceFieldVertex> vertices;
-        int forceType = 0;
-        int primaryKeyIndex = -1;
-        int secondaryKeyIndex = -1;
-        int primarySequentialGearValue = -1;
-        int secondarySequentialGearValue = -1;
         LONG powerX = 0;
         LONG powerY = 0;
         LONG offsetX = 0;
         LONG offsetY = 0;
+        std::vector<POINT> vertices;
     };
     struct FFBPreset
     {
         std::string fileVersion;
         std::string name;
+        std::string path;
         std::vector<ForceField> forceFields;
-        bool valid = false;
+    };
+    struct PresetInfo
+    {
+        std::string name;
+        std::string path;
+    };
+    struct PresetTestState
+    {
+        bool enabled = false;
+        int activeForceField = -1;
     };
     extern std::vector<DeviceCandidate> g_candidates;
     extern FFBPreset g_activePreset;
     extern std::mutex g_presetMutex;
+    extern FFBPreset g_loadedPreset;
+    extern std::vector<PresetInfo> g_availablePresets;
+    extern PresetTestState g_presetTestState;
     void Log(const std::string& text);
     template <typename... Args>
     void Logf(const char* format, Args... args)
@@ -136,7 +145,13 @@ namespace MultiFFBJoy
     void StartFFBWatchdog();
     void StopFFBWatchdog();
     // Presets
+// Presets
     bool LoadFFBPreset(const std::string& path);
+    bool ReloadFFBPresets();
+    const std::vector<PresetInfo>& GetAvailablePresets();
+    bool TestFFBPreset(const std::string& path);
+    void StopFFBPresetTest();
+    void UpdatePresetTest();
     void ClearFFBPreset();
     const ForceField* FindForceFieldByName(const std::string& name);
     // Device
