@@ -179,6 +179,9 @@ template <typename... Args>
     void ShutdownDirectInput();
     bool SelectFirstSuitableDevice();
     void ReleaseFFBDevice();
+    bool ReadFFBJoystickPosition(
+        LONG& x,
+        LONG& y);
 // -----------------------------------------------------------------------------
 // Presets
 // -----------------------------------------------------------------------------

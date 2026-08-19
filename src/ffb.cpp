@@ -774,4 +774,85 @@ namespace MultiFFBJoy
             "attempting reacquisition.");
         return ReacquireFFBDevice();
     }
+    bool ReadFFBJoystickPosition(
+        LONG& x,
+        LONG& y)
+    {
+        IDirectInputDevice8W* device = nullptr;
+        DWORD xOffset = DIJOFS_X;
+        DWORD yOffset = DIJOFS_Y;
+        {
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
+            device = g_ffbDevice;
+            xOffset =
+            g_state.xAxisOffset;
+            yOffset =
+            g_state.yAxisOffset;
+        }
+        if (device == nullptr)
+            return false;
+        DIJOYSTATE2 state{};
+        HRESULT hr =
+        device->GetDeviceState(
+            sizeof(state),
+            &state);
+        if (FAILED(hr))
+        {
+            if (hr == DIERR_INPUTLOST ||
+                hr == DIERR_NOTACQUIRED)
+            {
+                device->Acquire();
+            }
+            return false;
+        }
+        const auto normalize =
+        [](LONG value) -> LONG
+        {
+// The SideWinder is normally returned as
+// a centered signed DirectInput axis.
+//
+// Convert:
+//
+// -32768 ... 32767
+//
+// into:
+//
+// -10000 ... 10000
+            const double normalized =
+            (static_cast<double>(value) +
+                32768.0) /
+            65535.0;
+            const double result =
+            -10000.0 +
+            normalized * 20000.0;
+            return static_cast<LONG>(
+                std::lround(
+                    std::clamp(
+                        result,
+                        -10000.0,
+                        10000.0)));
+        };
+        if (xOffset == DIJOFS_X)
+        {
+            x =
+            normalize(
+                state.lX);
+        }
+        else
+        {
+            x = 0;
+        }
+        if (yOffset == DIJOFS_Y)
+        {
+            y =
+            normalize(
+                state.lY);
+        }
+        else
+        {
+            y = 0;
+        }
+        return true;
+    }
 } // namespace MultiFFBJoy
