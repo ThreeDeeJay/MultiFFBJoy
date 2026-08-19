@@ -518,28 +518,6 @@ EnumerateForceFieldPresets()
         result.end());
     return result;
 }
-int FindForceFieldAtPosition(
-    LONG x,
-    LONG y)
-{
-    std::lock_guard<std::mutex> lock(
-        g_presetMutex);
-    if (g_loadedPreset.forceFields.empty())
-        return -1;
-    for (size_t i = 0;
-        i < g_loadedPreset.forceFields.size();
-        ++i)
-    {
-        if (PointInsideForceField(
-            g_loadedPreset.forceFields[i],
-            x,
-            y))
-        {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
 namespace
 {
     void PresetTestThreadProc()
@@ -697,11 +675,8 @@ int FindForceFieldAtPosition(
 {
     std::lock_guard<std::mutex> lock(
         g_presetMutex);
-    if (!g_loadedPreset.loaded ||
-        g_loadedPreset.forceFields.empty())
-    {
+    if (g_loadedPreset.forceFields.empty())
         return -1;
-    }
     for (size_t i = 0;
         i < g_loadedPreset.forceFields.size();
         ++i)
@@ -709,45 +684,27 @@ int FindForceFieldAtPosition(
         const ForceField& field =
         g_loadedPreset.forceFields[i];
         if (field.vertices.empty())
-        {
             continue;
-        }
-        bool inside = false;
-/*
-* The .fff files we are currently supporting
-* describe the PRND zones as polygons in the
-* X/Y plane.
-*
-* Use a standard point-in-polygon test.
-*/
-        for (size_t j = 0;
-            j < field.vertices.size();
-            ++j)
+        LONG minX = field.vertices[0].x;
+        LONG maxX = field.vertices[0].x;
+        LONG minY = field.vertices[0].y;
+        LONG maxY = field.vertices[0].y;
+        for (const auto& vertex :
+            field.vertices)
         {
-            const ForceFieldVertex& a =
-            field.vertices[j];
-            const ForceFieldVertex& b =
-            field.vertices[
-                (j + 1) %
-                field.vertices.size()];
-            const bool crosses =
-            ((a.y > y) != (b.y > y));
-            if (!crosses)
-            {
-                continue;
-            }
-            const double intersectionX =
-            static_cast<double>(b.x - a.x) *
-            static_cast<double>(y - a.y) /
-            static_cast<double>(b.y - a.y) +
-            static_cast<double>(a.x);
-            if (static_cast<double>(x) <
-                intersectionX)
-            {
-                inside = !inside;
-            }
+            minX =
+            std::min(minX, vertex.x);
+            maxX =
+            std::max(maxX, vertex.x);
+            minY =
+            std::min(minY, vertex.y);
+            maxY =
+            std::max(maxY, vertex.y);
         }
-        if (inside)
+        if (x >= minX &&
+            x <= maxX &&
+            y >= minY &&
+            y <= maxY)
         {
             return static_cast<int>(i);
         }
