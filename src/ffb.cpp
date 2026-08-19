@@ -3,8 +3,14 @@ namespace MultiFFBJoy
 {
     bool CreateSpringEffect()
     {
-        if (g_ffbDevice == nullptr)
+        if (!IsFFBDeviceUsable())
             return false;
+        if (g_springEffect != nullptr)
+        {
+            g_springEffect->Stop();
+            g_springEffect->Release();
+            g_springEffect = nullptr;
+        }
         DWORD axes[2] =
         {
             DIJOFS_X,
@@ -19,40 +25,48 @@ namespace MultiFFBJoy
         for (int i = 0; i < 2; ++i)
         {
             conditions[i].lOffset = 0;
-            conditions[i].lPositiveCoefficient = 0;
-            conditions[i].lNegativeCoefficient = 0;
-            conditions[i].dwPositiveSaturation = DI_FFNOMINALMAX;
-            conditions[i].dwNegativeSaturation = DI_FFNOMINALMAX;
+            conditions[i].lPositiveCoefficient =
+            DI_FFNOMINALMAX;
+            conditions[i].lNegativeCoefficient =
+            DI_FFNOMINALMAX;
+            conditions[i].lPositiveSaturation =
+            DI_FFNOMINALMAX;
+            conditions[i].lNegativeSaturation =
+            DI_FFNOMINALMAX;
             conditions[i].lDeadBand = 0;
         }
-        DIEFFECT effect{};
-        effect.dwSize = sizeof(DIEFFECT);
-        effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-        effect.dwDuration = INFINITE;
-        effect.dwSamplePeriod = 0;
-        effect.dwGain = DI_FFNOMINALMAX;
-        effect.dwTriggerButton = DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval = 0;
-        effect.cAxes = 2;
-        effect.rgdwAxes = axes;
-        effect.rglDirection = directions;
-        effect.lpEnvelope = nullptr;
-        effect.cbTypeSpecificParams = sizeof(conditions);
-        effect.lpvTypeSpecificParams = conditions;
-        HRESULT hr = g_ffbDevice->CreateEffect(
+        DIEFFECT effectParameters{};
+        effectParameters.dwSize =
+        sizeof(DIEFFECT);
+        effectParameters.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        effectParameters.cAxes = 2;
+        effectParameters.rgdwAxes =
+        axes;
+        effectParameters.rglDirection =
+        directions;
+        effectParameters.cbTypeSpecificParams =
+        sizeof(conditions);
+        effectParameters.lpvTypeSpecificParams =
+        conditions;
+        HRESULT hr =
+        g_ffbDevice->CreateEffect(
             GUID_Spring,
-            &effect,
+            &effectParameters,
             &g_springEffect,
             nullptr);
         if (FAILED(hr))
         {
             Logf(
-                "CreateEffect(GUID_Spring) failed: 0x%08lX",
+                "CreateEffect(GUID_Spring) failed: "
+                "HRESULT=0x%08lX",
                 static_cast<unsigned long>(hr));
             g_springEffect = nullptr;
             return false;
         }
-        Log("Spring effect created.");
+        Log(
+            "Two-axis DirectInput spring effect created.");
         return true;
     }
     bool CreateTestConstantForceEffect()
@@ -116,25 +130,25 @@ namespace MultiFFBJoy
         {
             return true;
         }
-    /*
-     * These HRESULTs mean DirectInput currently cannot provide
-     * the device state. They do NOT necessarily mean that the
-     * physical device has disappeared or that the COM device
-     * object is permanently unusable.
-     *
-     * In particular, DIERR_INPUTLOST and DIERR_NOTACQUIRED can
-     * occur during ownership/focus transitions.
-     */
+/*
+* These HRESULTs mean DirectInput currently cannot provide
+* the device state. They do NOT necessarily mean that the
+* physical device has disappeared or that the COM device
+* object is permanently unusable.
+*
+* In particular, DIERR_INPUTLOST and DIERR_NOTACQUIRED can
+* occur during ownership/focus transitions.
+*/
         if (hr == DIERR_INPUTLOST ||
             hr == DIERR_NOTACQUIRED ||
             hr == DIERR_NOTEXCLUSIVEACQUIRED)
         {
             return false;
         }
-    /*
-     * Unexpected failure. Keep the diagnostic because this is
-     * something the watchdog should investigate.
-     */
+/*
+* Unexpected failure. Keep the diagnostic because this is
+* something the watchdog should investigate.
+*/
         Logf(
             "FFB device health check failed unexpectedly: "
             "0x%08lX",
@@ -283,127 +297,150 @@ namespace MultiFFBJoy
     bool SetSpringForceField(
         const ForceField& forceField)
     {
-        if (g_ffbDevice == nullptr || g_springEffect == nullptr)
+        if (!EnsureFFBDeviceReady())
         {
             Log(
-                "SetSpringForceField: FFB device/effect unavailable.");
+                "SetSpringForceField: "
+                "FFB device is not ready.");
             return false;
         }
-        if (forceField.forceType != 1 &&
-            forceField.type != 1)
+        IDirectInputEffect* effect = nullptr;
         {
-            Logf(
-                "SetSpringForceField: forcefield \"%s\" is not a spring.",
-                forceField.name.c_str());
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
+            effect = g_springEffect;
+        }
+        if (effect == nullptr)
+        {
+            Log(
+                "SetSpringForceField: "
+                "spring effect does not exist.");
             return false;
         }
-        LONG powerX = std::clamp<LONG>(
-            forceField.powerX,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-        LONG powerY = std::clamp<LONG>(
-            forceField.powerY,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-    // FFShifter stores the spring power in the forcefield.
-    //
-    // DirectInput's spring coefficients use the nominal force range.
-    // Convert the FFShifter values into normalized spring coefficients.
-        const LONG normalizedX =
-        std::clamp<LONG>(
-            std::abs(powerX),
-            0,
-            DI_FFNOMINALMAX);
-        const LONG normalizedY =
-        std::clamp<LONG>(
-            std::abs(powerY),
-            0,
-            DI_FFNOMINALMAX);
+/*
+* The supplied FFShifter .fff files use FORCE TYPE=1
+* for their spring zones.
+*
+* DirectInput represents a spring/conditional force with
+* DICONDITION parameters:
+*
+*   lOffset
+*   lPositiveCoefficient
+*   lNegativeCoefficient
+*   lPositiveSaturation
+*   lNegativeSaturation
+*   lDeadBand
+*
+* FFShifter's forcefield data gives us:
+*
+*   POWER X/Y
+*   OFFSET X/Y
+*
+* For this stage we map the X/Y forcefield values directly
+* into the corresponding DirectInput conditional axes.
+*/
         DICONDITION conditions[2]{};
         conditions[0].lOffset =
-        std::clamp<LONG>(
-            forceField.offsetX,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
+        forceField.offsetX;
+        conditions[0].lPositiveCoefficient =
+        forceField.powerX;
+        conditions[0].lNegativeCoefficient =
+        forceField.powerX;
+        conditions[0].lPositiveSaturation =
+        DI_FFNOMINALMAX;
+        conditions[0].lNegativeSaturation =
+        DI_FFNOMINALMAX;
+        conditions[0].lDeadBand = 0;
         conditions[1].lOffset =
-        std::clamp<LONG>(
-            forceField.offsetY,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-        conditions[0].lPositiveCoefficient = normalizedX;
-        conditions[0].lNegativeCoefficient = normalizedX;
-        conditions[1].lPositiveCoefficient = normalizedY;
-        conditions[1].lNegativeCoefficient = normalizedY;
-        conditions[0].dwPositiveSaturation = DI_FFNOMINALMAX;
-        conditions[0].dwNegativeSaturation = DI_FFNOMINALMAX;
-        conditions[1].dwPositiveSaturation = DI_FFNOMINALMAX;
-        conditions[1].dwNegativeSaturation = DI_FFNOMINALMAX;
-        DWORD axes[2] =
+        forceField.offsetY;
+        conditions[1].lPositiveCoefficient =
+        forceField.powerY;
+        conditions[1].lNegativeCoefficient =
+        forceField.powerY;
+        conditions[1].lPositiveSaturation =
+        DI_FFNOMINALMAX;
+        conditions[1].lNegativeSaturation =
+        DI_FFNOMINALMAX;
+        conditions[1].lDeadBand = 0;
+        DWORD axes[2]{};
         {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG directions[2] =
-        {
-            0,
-            0
-        };
-        DIEFFECT effect{};
-        effect.dwSize = sizeof(DIEFFECT);
-        effect.dwFlags =
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
+            axes[0] =
+            g_state.xAxisOffset;
+            axes[1] =
+            g_state.yAxisOffset;
+        }
+        DIEFFECT effectParameters{};
+        effectParameters.dwSize =
+        sizeof(DIEFFECT);
+        effectParameters.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
-        effect.cAxes = 2;
-        effect.rgdwAxes = axes;
-        effect.rglDirection = directions;
-        effect.cbTypeSpecificParams =
+        effectParameters.cAxes = 2;
+        effectParameters.rgdwAxes =
+        axes;
+        effectParameters.lpEnvelope =
+        nullptr;
+        effectParameters.cbTypeSpecificParams =
         sizeof(conditions);
-        effect.lpvTypeSpecificParams =
+        effectParameters.lpvTypeSpecificParams =
         conditions;
+/*
+* The spring effect already exists and is being updated
+* in-place. This is what lets us switch Park -> Reverse
+* -> Neutral -> Drive without recreating the DirectInput
+* effect every time the joystick crosses a zone.
+*/
         HRESULT hr =
-        g_springEffect->SetParameters(
-            &effect,
+        effect->SetParameters(
+            &effectParameters,
             DIEP_TYPESPECIFICPARAMS |
-            DIEP_DIRECTION |
             DIEP_START);
         if (FAILED(hr))
         {
             Logf(
-                "SetSpringForceField: SetParameters failed: "
-                "0x%08lX",
+                "SetSpringForceField failed for \"%s\": "
+                "HRESULT=0x%08lX",
+                forceField.name.c_str(),
                 static_cast<unsigned long>(hr));
-            if (hr == DIERR_INPUTLOST ||
-                hr == DIERR_NOTACQUIRED ||
-                hr == DIERR_NOTEXCLUSIVEACQUIRED)
-            {
-                Log(
-                    "SetSpringForceField: spring effect lost "
-                    "device access.");
-            }
             return false;
         }
         {
-            std::lock_guard<std::mutex> lock(g_stateMutex);
-        // Keep the GUI/status representation meaningful.
-            const float strengthX =
-            static_cast<float>(normalizedX) /
-            static_cast<float>(DI_FFNOMINALMAX);
-            const float strengthY =
-            static_cast<float>(normalizedY) /
-            static_cast<float>(DI_FFNOMINALMAX);
+            std::lock_guard<std::mutex> lock(
+                g_stateMutex);
+/*
+* Use the larger of the absolute X/Y power values
+* for the existing status display.
+*/
+            const float xStrength =
+            static_cast<float>(
+                std::abs(forceField.powerX)) /
+            static_cast<float>(
+                DI_FFNOMINALMAX);
+            const float yStrength =
+            static_cast<float>(
+                std::abs(forceField.powerY)) /
+            static_cast<float>(
+                DI_FFNOMINALMAX);
             g_state.springStrength =
-            std::max(strengthX, strengthY);
-            g_state.springPersistent = true;
+            std::max(
+                xStrength,
+                yStrength);
+            g_state.springPersistent =
+            true;
+            g_state.lastCommand =
+            std::chrono::steady_clock::now();
         }
         UpdateStatus();
         Logf(
-            "Spring forcefield \"%s\" started "
-            "(offset=%ld,%ld power=%ld,%ld).",
+            "Applied spring forcefield \"%s\": "
+            "power=(%ld,%ld), offset=(%ld,%ld).",
             forceField.name.c_str(),
-            forceField.offsetX,
-            forceField.offsetY,
             forceField.powerX,
-            forceField.powerY);
+            forceField.powerY,
+            forceField.offsetX,
+            forceField.offsetY);
         return true;
     }
     bool SetTestConstantForce(LONG x, LONG y)
@@ -680,20 +717,20 @@ namespace MultiFFBJoy
             }
             return true;
         }
-    /*
-     * A single failed health check is not enough to immediately
-     * destroy the current device. The watchdog is responsible for
-     * detecting sustained device loss.
-     *
-     * For an explicit CENTER request, however, we need a usable
-     * device immediately. Give DirectInput a brief opportunity to
-     * recover before performing the expensive full re-acquisition.
-     */
+/*
+* A single failed health check is not enough to immediately
+* destroy the current device. The watchdog is responsible for
+* detecting sustained device loss.
+*
+* For an explicit CENTER request, however, we need a usable
+* device immediately. Give DirectInput a brief opportunity to
+* recover before performing the expensive full re-acquisition.
+*/
         constexpr int RETRY_COUNT = 3;
         constexpr DWORD RETRY_DELAY_MS = 50;
         for (int attempt = 1;
-           attempt <= RETRY_COUNT;
-           ++attempt)
+            attempt <= RETRY_COUNT;
+            ++attempt)
         {
             if (g_reacquiring.load(std::memory_order_acquire))
             {
