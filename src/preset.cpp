@@ -614,23 +614,6 @@ void UpdatePresetTest()
         StopSpring();
         return;
     }
-    if (SetSpringForceField(field))
-    {
-        Logf(
-            "Applied spring forcefield \"%s\": "
-            "power=(%ld,%ld), offset=(%ld,%ld).",
-            field.name.c_str(),
-            field.powerX,
-            field.powerY,
-            field.offsetX,
-            field.offsetY);
-    }
-    else
-    {
-        Logf(
-            "Failed to apply spring forcefield \"%s\".",
-            field.name.c_str());
-    }
 }
 void StartPresetTestMonitor()
 {

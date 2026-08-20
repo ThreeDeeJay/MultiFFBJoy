@@ -471,30 +471,17 @@ namespace MultiFFBJoy
             return false;
         }
 /*
-* DirectInput spring effects use:
+* The .fff preset coordinates are expressed as:
 *
-*   lOffset[0] = X-axis center
-*   lOffset[1] = Y-axis center
+*     X = -10000 .. +10000
+*     Y = -10000 .. +10000
 *
-* The .fff preset uses the same logical coordinate
-* system:
+* DirectInput spring offsets use the same X/Y order.
 *
-*   X = -10000 .. +10000
-*   Y = -10000 .. +10000
+* Therefore:
 *
-* Therefore DO NOT swap X/Y here.
-*
-* In particular, a PRND field whose center is:
-*
-*   Park    (0,-8500)
-*   Reverse (0,-3500)
-*   Neutral (0, 3500)
-*   Drive   (0, 8500)
-*
-* must produce:
-*
-*   lOffset[0] = 0
-*   lOffset[1] = corresponding Y center
+*     condition[0].lOffset = centerX
+*     condition[1].lOffset = centerY
 */
         LONG offset[2] =
         {
@@ -508,13 +495,8 @@ namespace MultiFFBJoy
                 DI_FFNOMINALMAX)
         };
 /*
-* The preset's power values are spring coefficients,
-* not constant-force directions.
-*
-* Positive coefficients are appropriate for the normal
-* DirectInput spring effect. The effect itself determines
-* the force direction from the current position relative
-* to lOffset.
+* Preset power values become spring coefficients.
+* They describe stiffness, not force direction.
 */
         LONG coefficient[2] =
         {
@@ -527,40 +509,63 @@ namespace MultiFFBJoy
                 0,
                 DI_FFNOMINALMAX)
         };
-        DICONDITION condition[2]{};
-        condition[0].lOffset = offset[0];
-        condition[0].lPositiveCoefficient = coefficient[0];
-        condition[0].lNegativeCoefficient = coefficient[0];
-        condition[0].dwPositiveSaturation = DI_FFNOMINALMAX;
-        condition[0].dwNegativeSaturation = DI_FFNOMINALMAX;
-        condition[0].lDeadBand = 0;
-        condition[1].lOffset = offset[1];
-        condition[1].lPositiveCoefficient = coefficient[1];
-        condition[1].lNegativeCoefficient = coefficient[1];
-        condition[1].dwPositiveSaturation = DI_FFNOMINALMAX;
-        condition[1].dwNegativeSaturation = DI_FFNOMINALMAX;
-        condition[1].lDeadBand = 0;
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
+        DICONDITION conditions[2]{};
+        for (int i = 0; i < 2; ++i)
+        {
+            conditions[i].lOffset =
+            offset[i];
+            conditions[i].lPositiveCoefficient =
+            coefficient[i];
+            conditions[i].lNegativeCoefficient =
+            coefficient[i];
+            conditions[i].dwPositiveSaturation =
+            DI_FFNOMINALMAX;
+            conditions[i].dwNegativeSaturation =
+            DI_FFNOMINALMAX;
+            conditions[i].lDeadBand =
+            0;
+        }
         DIEFFECT effect{};
-        effect.dwSize = sizeof(DIEFFECT);
+        effect.dwSize =
+        sizeof(DIEFFECT);
         effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
-        effect.dwDuration = INFINITE;
-        effect.dwGain = DI_FFNOMINALMAX;
-        effect.dwTriggerButton = DIEB_NOTRIGGER;
-        effect.cAxes = 2;
+        effect.dwDuration =
+        INFINITE;
+        effect.dwSamplePeriod =
+        0;
+        effect.dwGain =
+        DI_FFNOMINALMAX;
+        effect.dwTriggerButton =
+        DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval =
+        0;
+        effect.cAxes =
+        2;
         effect.rgdwAxes =
-        g_springAxes;
+        axes;
+        effect.rglDirection =
+        directions;
+        effect.cbTypeSpecificParams =
+        sizeof(conditions);
         effect.lpvTypeSpecificParams =
-        condition;
-        effect.dwTypeSpecificParams =
-        sizeof(DICONDITION);
+        conditions;
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
-            DIEP_TYPESPECIFICPARAMS |
             DIEP_DIRECTION |
-            DIEP_START);
+            DIEP_TYPESPECIFICPARAMS);
         if (FAILED(hr))
         {
             Logf(
@@ -568,25 +573,36 @@ namespace MultiFFBJoy
                 "HRESULT=0x%08lX",
                 forceField.name.c_str(),
                 static_cast<unsigned long>(hr));
+            if (hr == DIERR_INPUTLOST ||
+                hr == DIERR_NOTACQUIRED ||
+                hr == DIERR_NOTEXCLUSIVEACQUIRED)
+            {
+                Log(
+                    "Spring forcefield lost device access.");
+            }
             return false;
         }
-        if (SetSpringForceField(field))
+        hr =
+        g_springEffect->Start(
+            1,
+            0);
+        if (FAILED(hr))
         {
             Logf(
-                "Applied spring forcefield \"%s\": "
-                "center=(%ld,%ld), power=(%ld,%ld).",
-                field.name.c_str(),
-                field.centerX,
-                field.centerY,
-                field.powerX,
-                field.powerY);
+                "Spring forcefield Start failed for \"%s\": "
+                "HRESULT=0x%08lX",
+                forceField.name.c_str(),
+                static_cast<unsigned long>(hr));
+            return false;
         }
-        else
-        {
-            Logf(
-                "Failed to apply spring forcefield \"%s\".",
-                field.name.c_str());
-        }
+        Logf(
+            "Applied spring forcefield \"%s\": "
+            "center=(%ld,%ld), power=(%ld,%ld).",
+            forceField.name.c_str(),
+            forceField.centerX,
+            forceField.centerY,
+            forceField.powerX,
+            forceField.powerY);
         return true;
     }
     bool SetTestConstantForce(LONG x, LONG y)
