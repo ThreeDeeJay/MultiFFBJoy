@@ -616,14 +616,13 @@ void UpdatePresetTest()
         y);
     if (field.forceType != 1)
     {
+        Logf(
+            "Preset zone \"%s\" is not a spring forcefield.",
+            field.name.c_str());
         StopSpring();
         return;
     }
-    if (SetSpringForceField(
-        field.powerX,
-        field.powerY,
-        field.offsetX,
-        field.offsetY))
+    if (SetSpringForceField(field))
     {
         Logf(
             "Applied spring forcefield \"%s\": "
