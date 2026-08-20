@@ -471,104 +471,95 @@ namespace MultiFFBJoy
             return false;
         }
 /*
-* The preset coordinates are already in FFShifter's
-* coordinate system:
+* DirectInput spring effects use:
 *
-*     X = -10000 .. +10000
-*     Y = -10000 .. +10000
+*   lOffset[0] = X-axis center
+*   lOffset[1] = Y-axis center
 *
-* DirectInput's Cartesian spring offsets are:
+* The .fff preset uses the same logical coordinate
+* system:
 *
-*     rgdwAxes[0] -> X
-*     rgdwAxes[1] -> Y
+*   X = -10000 .. +10000
+*   Y = -10000 .. +10000
 *
-* The important part is that the preset CENTER must
-* become the spring equilibrium point.
+* Therefore DO NOT swap X/Y here.
 *
-* Do not swap centerX and centerY.
+* In particular, a PRND field whose center is:
+*
+*   Park    (0,-8500)
+*   Reverse (0,-3500)
+*   Neutral (0, 3500)
+*   Drive   (0, 8500)
+*
+* must produce:
+*
+*   lOffset[0] = 0
+*   lOffset[1] = corresponding Y center
 */
-        DICONDITION condition[2]{};
-        condition[0].lOffset =
-        std::clamp<LONG>(
-            forceField.centerX,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-        condition[0].lPositiveCoefficient =
-        std::clamp<LONG>(
-            std::abs(forceField.powerX),
-            0,
-            DI_FFNOMINALMAX);
-        condition[0].lNegativeCoefficient =
-        std::clamp<LONG>(
-            std::abs(forceField.powerX),
-            0,
-            DI_FFNOMINALMAX);
-        condition[0].dwPositiveSaturation =
-        DI_FFNOMINALMAX;
-        condition[0].dwNegativeSaturation =
-        DI_FFNOMINALMAX;
-        condition[0].lDeadBand = 0;
-        condition[1].lOffset =
-        std::clamp<LONG>(
-            forceField.centerY,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-        condition[1].lPositiveCoefficient =
-        std::clamp<LONG>(
-            std::abs(forceField.powerY),
-            0,
-            DI_FFNOMINALMAX);
-        condition[1].lNegativeCoefficient =
-        std::clamp<LONG>(
-            std::abs(forceField.powerY),
-            0,
-            DI_FFNOMINALMAX);
-        condition[1].dwPositiveSaturation =
-        DI_FFNOMINALMAX;
-        condition[1].dwNegativeSaturation =
-        DI_FFNOMINALMAX;
-        condition[1].lDeadBand = 0;
+        LONG offset[2] =
+        {
+            std::clamp<LONG>(
+                forceField.centerX,
+                -DI_FFNOMINALMAX,
+                DI_FFNOMINALMAX),
+            std::clamp<LONG>(
+                forceField.centerY,
+                -DI_FFNOMINALMAX,
+                DI_FFNOMINALMAX)
+        };
 /*
-* Preserve the axis array and DIEFFECT configuration
-* from the existing working SetSpringForceField().
+* The preset's power values are spring coefficients,
+* not constant-force directions.
 *
-* The existing spring effect was already successfully
-* created and started, so only replace its condition
-* parameters here.
-*
-* For a two-axis Cartesian spring, DirectInput expects
-* the same two axis object IDs that were used when the
-* spring effect was originally created.
-*
-* Therefore use the axis array already stored by the
-* existing implementation rather than introducing a
-* new g_springAxes symbol.
+* Positive coefficients are appropriate for the normal
+* DirectInput spring effect. The effect itself determines
+* the force direction from the current position relative
+* to lOffset.
 */
+        LONG coefficient[2] =
+        {
+            std::clamp<LONG>(
+                std::abs(forceField.powerX),
+                0,
+                DI_FFNOMINALMAX),
+            std::clamp<LONG>(
+                std::abs(forceField.powerY),
+                0,
+                DI_FFNOMINALMAX)
+        };
+        DICONDITION condition[2]{};
+        condition[0].lOffset = offset[0];
+        condition[0].lPositiveCoefficient = coefficient[0];
+        condition[0].lNegativeCoefficient = coefficient[0];
+        condition[0].dwPositiveSaturation = DI_FFNOMINALMAX;
+        condition[0].dwNegativeSaturation = DI_FFNOMINALMAX;
+        condition[0].lDeadBand = 0;
+        condition[1].lOffset = offset[1];
+        condition[1].lPositiveCoefficient = coefficient[1];
+        condition[1].lNegativeCoefficient = coefficient[1];
+        condition[1].dwPositiveSaturation = DI_FFNOMINALMAX;
+        condition[1].dwNegativeSaturation = DI_FFNOMINALMAX;
+        condition[1].lDeadBand = 0;
         DIEFFECT effect{};
-        effect.dwSize =
-        sizeof(DIEFFECT);
+        effect.dwSize = sizeof(DIEFFECT);
         effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
+        effect.dwDuration = INFINITE;
+        effect.dwGain = DI_FFNOMINALMAX;
+        effect.dwTriggerButton = DIEB_NOTRIGGER;
         effect.cAxes = 2;
-/*
-* IMPORTANT:
-*
-* Keep the existing rgdwAxes assignment from your
-* original SetSpringForceField()/spring-effect setup.
-*
-* If your current implementation has:
-*
-*     effect.rgdwAxes = ...
-*
-* leave that existing assignment here.
-*/
+        effect.rgdwAxes =
+        g_springAxes;
         effect.lpvTypeSpecificParams =
         condition;
+        effect.dwTypeSpecificParams =
+        sizeof(DICONDITION);
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
             DIEP_TYPESPECIFICPARAMS |
+            DIEP_DIRECTION |
             DIEP_START);
         if (FAILED(hr))
         {
@@ -579,14 +570,23 @@ namespace MultiFFBJoy
                 static_cast<unsigned long>(hr));
             return false;
         }
-        Logf(
-            "Applied spring forcefield \"%s\": "
-            "center=(%ld,%ld), power=(%ld,%ld).",
-            forceField.name.c_str(),
-            forceField.centerX,
-            forceField.centerY,
-            forceField.powerX,
-            forceField.powerY);
+        if (SetSpringForceField(field))
+        {
+            Logf(
+                "Applied spring forcefield \"%s\": "
+                "center=(%ld,%ld), power=(%ld,%ld).",
+                field.name.c_str(),
+                field.centerX,
+                field.centerY,
+                field.powerX,
+                field.powerY);
+        }
+        else
+        {
+            Logf(
+                "Failed to apply spring forcefield \"%s\".",
+                field.name.c_str());
+        }
         return true;
     }
     bool SetTestConstantForce(LONG x, LONG y)
