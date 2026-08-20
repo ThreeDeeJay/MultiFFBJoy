@@ -190,6 +190,7 @@ template <typename... Args>
         const std::filesystem::path& path);
     void ClearForceFieldPreset();
     void UpdatePresetTest();
+    void StartPresetTest();
     void StopPresetTest();
     bool SetSpringForceField(
         const ForceField& forceField);
