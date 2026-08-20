@@ -424,18 +424,7 @@ namespace MultiFFBJoy
                 "Preset monitor thread started.");
             while (g_presetTestRunning.load())
             {
-                bool enabled = false;
-                {
-                    std::lock_guard<std::mutex> lock(
-                        g_presetMutex);
-                    enabled =
-                    g_presetTestState.enabled &&
-                    !g_loadedPreset.forceFields.empty();
-                }
-                if (enabled)
-                {
-                    UpdatePresetTest();
-                }
+                UpdatePresetTest();
                 std::this_thread::sleep_for(
                     std::chrono::milliseconds(10));
             }
@@ -556,88 +545,36 @@ EnumerateForceFieldPresets()
 }
 void UpdatePresetTest()
 {
+    if (!IsForceFieldPresetLoaded())
+    {
+        Log(
+            "Preset test ignored: no preset loaded.");
+        return;
+    }
+    if (!EnsureFFBDeviceReady())
+    {
+        Log(
+            "Preset test ignored: FFB device unavailable.");
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
-        if (!g_presetTestState.enabled)
-            return;
-        if (g_loadedPreset.forceFields.empty())
-            return;
+        g_presetTestState.enabled = true;
+        g_presetTestState.activeForceField = -1;
+        g_presetTestState.normalizedX = 0.0f;
+        g_presetTestState.normalizedY = 0.0f;
     }
-    LONG x = 0;
-    LONG y = 0;
-    if (!ReadFFBJoystickPosition(x, y))
-        return;
-    const int zoneIndex =
-    FindForceFieldAtPosition(x, y);
-    int previousZone;
+    Log(
+        "Preset test enabled: spring forcefield zones "
+        "are now position-aware.");
+    Log(
+        "Preset zone tracking started.");
+    if (!g_presetTestRunning.exchange(true))
     {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        previousZone =
-        g_presetTestState.activeForceField;
-    }
-    if (zoneIndex == previousZone)
-        return;
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        g_presetTestState.activeForceField =
-        zoneIndex;
-    }
-    if (zoneIndex < 0)
-    {
-        Logf(
-            "Preset zone: none (stick X=%ld Y=%ld).",
-            x,
-            y);
-        StopSpring();
-        return;
-    }
-    ForceField field;
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        if (zoneIndex >=
-            static_cast<int>(
-                g_loadedPreset.forceFields.size()))
-        {
-            return;
-        }
-        field =
-        g_loadedPreset.forceFields[
-            zoneIndex];
-    }
-    Logf(
-        "Preset zone: \"%s\" (index=%d, X=%ld Y=%ld).",
-        field.name.c_str(),
-        zoneIndex,
-        x,
-        y);
-    if (field.forceType != 1)
-    {
-        Logf(
-            "Preset zone \"%s\" is not a spring forcefield.",
-            field.name.c_str());
-        StopSpring();
-        return;
-    }
-    if (SetSpringForceField(field))
-    {
-        Logf(
-            "Applied spring forcefield \"%s\": "
-            "power=(%ld,%ld), offset=(%ld,%ld).",
-            field.name.c_str(),
-            field.powerX,
-            field.powerY,
-            field.offsetX,
-            field.offsetY);
-    }
-    else
-    {
-        Logf(
-            "Failed to apply spring forcefield \"%s\".",
-            field.name.c_str());
+        g_presetTestThread =
+        std::thread(
+            PresetTestMonitorThread);
     }
 }
 void StartPresetTestMonitor()
@@ -647,7 +584,7 @@ void StartPresetTestMonitor()
         return;
     }
     g_presetTestThread =
-        std::thread(PresetTestMonitorThread);
+    std::thread(PresetTestMonitorThread);
 }
 void StopPresetTestMonitor()
 {
@@ -687,7 +624,12 @@ void StartPresetTest()
         "are now position-aware.");
     Log(
         "Preset zone tracking started.");
-    StartPresetTestMonitor();
+    if (!g_presetTestRunning.exchange(true))
+    {
+        g_presetTestThread =
+        std::thread(
+            PresetTestMonitorThread);
+    }
 }
 int FindForceFieldAtPosition(
     LONG x,
