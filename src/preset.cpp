@@ -545,36 +545,91 @@ EnumerateForceFieldPresets()
 }
 void UpdatePresetTest()
 {
-    if (!IsForceFieldPresetLoaded())
+    LONG x = 0;
+    LONG y = 0;
+    if (!ReadFFBJoystickPosition(x, y))
     {
-        Log(
-            "Preset test ignored: no preset loaded.");
         return;
     }
-    if (!EnsureFFBDeviceReady())
-    {
-        Log(
-            "Preset test ignored: FFB device unavailable.");
-        return;
-    }
+    FFBPreset presetCopy;
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
-        g_presetTestState.enabled = true;
-        g_presetTestState.activeForceField = -1;
-        g_presetTestState.normalizedX = 0.0f;
-        g_presetTestState.normalizedY = 0.0f;
+        if (!g_presetTestState.enabled ||
+            g_loadedPreset.forceFields.empty())
+        {
+            return;
+        }
+        presetCopy = g_loadedPreset;
     }
-    Log(
-        "Preset test enabled: spring forcefield zones "
-        "are now position-aware.");
-    Log(
-        "Preset zone tracking started.");
-    if (!g_presetTestRunning.exchange(true))
+    const int zoneIndex =
+    FindForceFieldAtPosition(x, y);
     {
-        g_presetTestThread =
-        std::thread(
-            PresetTestMonitorThread);
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_presetTestState.normalizedX =
+        static_cast<float>(x) / 10000.0f;
+        g_presetTestState.normalizedY =
+        static_cast<float>(y) / 10000.0f;
+        if (zoneIndex ==
+            g_presetTestState.activeForceField)
+        {
+            return;
+        }
+        g_presetTestState.activeForceField =
+        zoneIndex;
+    }
+    if (zoneIndex < 0)
+    {
+        Logf(
+            "Preset zone: none (stick X=%ld Y=%ld).",
+            x,
+            y);
+        StopSpring();
+        return;
+    }
+    if (static_cast<size_t>(zoneIndex) >=
+        presetCopy.forceFields.size())
+    {
+        Logf(
+            "Preset zone index %d is out of range.",
+            zoneIndex);
+        StopSpring();
+        return;
+    }
+    const ForceField& field =
+    presetCopy.forceFields[
+        static_cast<size_t>(zoneIndex)];
+    Logf(
+        "Preset zone: \"%s\" (index=%d, X=%ld Y=%ld).",
+        field.name.c_str(),
+        zoneIndex,
+        x,
+        y);
+    if (field.forceType != 1)
+    {
+        Logf(
+            "Preset zone \"%s\" is not a spring forcefield.",
+            field.name.c_str());
+        StopSpring();
+        return;
+    }
+    if (SetSpringForceField(field))
+    {
+        Logf(
+            "Applied spring forcefield \"%s\": "
+            "power=(%ld,%ld), offset=(%ld,%ld).",
+            field.name.c_str(),
+            field.powerX,
+            field.powerY,
+            field.offsetX,
+            field.offsetY);
+    }
+    else
+    {
+        Logf(
+            "Failed to apply spring forcefield \"%s\".",
+            field.name.c_str());
     }
 }
 void StartPresetTestMonitor()
