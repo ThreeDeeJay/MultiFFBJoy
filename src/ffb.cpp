@@ -463,91 +463,130 @@ namespace MultiFFBJoy
                 "FFB device unavailable.");
             return false;
         }
-/*
-* IMPORTANT:
-*
-* Do not call SetParameters() on the existing spring
-* effect when changing zones.
-*
-* The SideWinder driver is returning
-* DIERR_ALREADYINITIALIZED (0x800704DF) when we try
-* to reinitialize the existing effect.
-*
-* Instead, destroy the old effect and create a fresh
-* one for each newly entered forcefield.
-*/
-        if (g_springEffect != nullptr)
+        if (g_springEffect == nullptr)
         {
-            HRESULT stopResult =
-            g_springEffect->Stop();
-            if (FAILED(stopResult) &&
-                stopResult != DIERR_INPUTLOST &&
-                stopResult != DIERR_NOTACQUIRED &&
-                stopResult != DIERR_NOTEXCLUSIVEACQUIRED)
-            {
-                Logf(
-                    "Previous spring Stop failed: "
-                    "HRESULT=0x%08lX",
-                    static_cast<unsigned long>(
-                        stopResult));
-            }
-            g_springEffect->Release();
-            g_springEffect =
-            nullptr;
-        }
-/*
-* For this revision we intentionally use the forcefield
-* CENTER as the spring target.
-*
-* OFFSET will be investigated separately once basic
-* multi-zone spring operation is confirmed.
-*/
-        const LONG centerX =
-        std::clamp<LONG>(
-            forceField.centerX,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-        const LONG centerY =
-        std::clamp<LONG>(
-            forceField.centerY,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-        if (!CreateSpringEffectAt(
-            centerX,
-            centerY,
-            forceField.powerX,
-            forceField.powerY))
-        {
-            Logf(
-                "Failed to create spring forcefield \"%s\".",
-                forceField.name.c_str());
+            Log(
+                "SetSpringForceField: "
+                "Spring effect unavailable.");
             return false;
         }
-        {
-            std::lock_guard<std::mutex> lock(
-                g_stateMutex);
 /*
-* Preserve the fact that this is a persistent
-* preset spring rather than a UDP command.
+* DirectInput spring effects use:
+*
+*   lOffset[0] = X-axis center
+*   lOffset[1] = Y-axis center
+*
+* The .fff preset uses the same logical coordinate
+* system:
+*
+*   X = -10000 .. +10000
+*   Y = -10000 .. +10000
+*
+* Therefore DO NOT swap X/Y here.
+*
+* In particular, a PRND field whose center is:
+*
+*   Park    (0,-8500)
+*   Reverse (0,-3500)
+*   Neutral (0, 3500)
+*   Drive   (0, 8500)
+*
+* must produce:
+*
+*   lOffset[0] = 0
+*   lOffset[1] = corresponding Y center
 */
-            g_state.springStrength =
-            1.0f;
-            g_state.springPersistent =
-            true;
+        LONG offset[2] =
+        {
+            std::clamp<LONG>(
+                forceField.centerX,
+                -DI_FFNOMINALMAX,
+                DI_FFNOMINALMAX),
+            std::clamp<LONG>(
+                forceField.centerY,
+                -DI_FFNOMINALMAX,
+                DI_FFNOMINALMAX)
+        };
+/*
+* The preset's power values are spring coefficients,
+* not constant-force directions.
+*
+* Positive coefficients are appropriate for the normal
+* DirectInput spring effect. The effect itself determines
+* the force direction from the current position relative
+* to lOffset.
+*/
+        LONG coefficient[2] =
+        {
+            std::clamp<LONG>(
+                std::abs(forceField.powerX),
+                0,
+                DI_FFNOMINALMAX),
+            std::clamp<LONG>(
+                std::abs(forceField.powerY),
+                0,
+                DI_FFNOMINALMAX)
+        };
+        DICONDITION condition[2]{};
+        condition[0].lOffset = offset[0];
+        condition[0].lPositiveCoefficient = coefficient[0];
+        condition[0].lNegativeCoefficient = coefficient[0];
+        condition[0].dwPositiveSaturation = DI_FFNOMINALMAX;
+        condition[0].dwNegativeSaturation = DI_FFNOMINALMAX;
+        condition[0].lDeadBand = 0;
+        condition[1].lOffset = offset[1];
+        condition[1].lPositiveCoefficient = coefficient[1];
+        condition[1].lNegativeCoefficient = coefficient[1];
+        condition[1].dwPositiveSaturation = DI_FFNOMINALMAX;
+        condition[1].dwNegativeSaturation = DI_FFNOMINALMAX;
+        condition[1].lDeadBand = 0;
+        DIEFFECT effect{};
+        effect.dwSize = sizeof(DIEFFECT);
+        effect.dwFlags =
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
+        effect.dwDuration = INFINITE;
+        effect.dwGain = DI_FFNOMINALMAX;
+        effect.dwTriggerButton = DIEB_NOTRIGGER;
+        effect.cAxes = 2;
+        effect.rgdwAxes =
+        g_springAxes;
+        effect.lpvTypeSpecificParams =
+        condition;
+        effect.dwTypeSpecificParams =
+        sizeof(DICONDITION);
+        HRESULT hr =
+        g_springEffect->SetParameters(
+            &effect,
+            DIEP_TYPESPECIFICPARAMS |
+            DIEP_DIRECTION |
+            DIEP_START);
+        if (FAILED(hr))
+        {
+            Logf(
+                "SetSpringForceField failed for \"%s\": "
+                "HRESULT=0x%08lX",
+                forceField.name.c_str(),
+                static_cast<unsigned long>(hr));
+            return false;
         }
-        UpdateStatus();
-        Logf(
-            "Applied spring forcefield \"%s\": "
-            "center=(%ld,%ld), "
-            "power=(%ld,%ld), "
-            "offset=(%ld,%ld)",
-            forceField.name.c_str(),
-            centerX,
-            centerY,
-            forceField.powerX,
-            forceField.powerY,
-            forceField.offsetX,
-            forceField.offsetY);
+        if (SetSpringForceField(field))
+        {
+            Logf(
+                "Applied spring forcefield \"%s\": "
+                "center=(%ld,%ld), power=(%ld,%ld).",
+                field.name.c_str(),
+                field.centerX,
+                field.centerY,
+                field.powerX,
+                field.powerY);
+        }
+        else
+        {
+            Logf(
+                "Failed to apply spring forcefield \"%s\".",
+                field.name.c_str());
+        }
         return true;
     }
     bool SetTestConstantForce(LONG x, LONG y)
