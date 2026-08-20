@@ -420,7 +420,7 @@ namespace MultiFFBJoy
                         {
                             Log(
                                 "Forcefield preset loaded.");
-                            UpdatePresetTest();
+                            StartPresetTest();
                         }
                         return 0;
                     }
