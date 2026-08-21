@@ -368,6 +368,17 @@ namespace MultiFFBJoy
             std::abs(forceField.powerY),
             0,
             DI_FFNOMINALMAX);
+        Logf(
+            "Spring mapping \"%s\": "
+            "offset=(%ld,%ld), power=(%ld,%ld), "
+            "coeff=(%ld,%ld)",
+            forceField.name.c_str(),
+            forceField.offsetX,
+            forceField.offsetY,
+            forceField.powerX,
+            forceField.powerY,
+            coefficientX,
+            coefficientY);
         DICONDITION conditions[2]{};
         conditions[0].lOffset =
         offsetX;
