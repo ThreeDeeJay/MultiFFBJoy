@@ -340,6 +340,17 @@ namespace MultiFFBJoy
             DIJOFS_X,
             DIJOFS_Y
         };
+/*
+ * FORCEFIELD CENTER describes the geometric location of the
+ * zone.  FORCE OFFSET describes the spring's balance point.
+ *
+ * FFShifter stores OFFSET in its normalized -10000..10000
+ * representation in the .fff file.  DirectInput condition
+ * offsets use the same nominal range.
+ *
+ * Therefore the spring equilibrium comes from OFFSET,
+ * not FORCEFIELD CENTER.
+ */
         const LONG offsetX =
         std::clamp<LONG>(
             forceField.offsetX,
