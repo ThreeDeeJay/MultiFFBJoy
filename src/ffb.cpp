@@ -350,43 +350,28 @@ namespace MultiFFBJoy
             forceField.offsetY,
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
-/*
-* FFShifter FORCE POWER is signed.
-*
-* DirectInput represents a condition's response separately
-* for positive and negative displacement from lOffset.
-*
-* For now preserve the FFShifter sign explicitly rather than
-* collapsing it with abs().
-*/
-        const LONG positiveCoefficientX =
-        forceField.powerX >= 0
-        ? std::clamp<LONG>(
-            forceField.powerX,
-            0,
-            DI_FFNOMINALMAX)
-        : 0;
-        const LONG negativeCoefficientX =
-        forceField.powerX < 0
-        ? std::clamp<LONG>(
-            -forceField.powerX,
-            0,
-            DI_FFNOMINALMAX)
-        : 0;
-        const LONG positiveCoefficientY =
-        forceField.powerY >= 0
-        ? std::clamp<LONG>(
-            forceField.powerY,
-            0,
-            DI_FFNOMINALMAX)
-        : 0;
-        const LONG negativeCoefficientY =
-        forceField.powerY < 0
-        ? std::clamp<LONG>(
-            -forceField.powerY,
-            0,
-            DI_FFNOMINALMAX)
-        : 0;
+        /*
+         * DirectInput's spring condition is a restoring spring:
+         *
+         *     positive displacement -> negative force
+         *     negative displacement -> positive force
+         *
+         * Therefore both sides need a coefficient.  FFShifter's
+         * signed FORCE POWER must not be mapped to the positive/
+         * negative coefficient fields; doing that creates a
+         * one-sided spring.
+         */
+        const LONG coefficientX =
+            std::clamp<LONG>(
+                std::abs(forceField.powerX),
+                0,
+                DI_FFNOMINALMAX);
+        
+        const LONG coefficientY =
+            std::clamp<LONG>(
+                std::abs(forceField.powerY),
+                0,
+                DI_FFNOMINALMAX);
         Logf(
             "Spring mapping \"%s\": "
             "offset=(%ld,%ld), power=(%ld,%ld), "
@@ -405,9 +390,9 @@ namespace MultiFFBJoy
         conditions[0].lOffset =
         offsetX;
         conditions[0].lPositiveCoefficient =
-        positiveCoefficientX;
+        coefficientX;
         conditions[0].lNegativeCoefficient =
-        negativeCoefficientX;
+        coefficientX;
         conditions[0].dwPositiveSaturation =
         DI_FFNOMINALMAX;
         conditions[0].dwNegativeSaturation =
@@ -417,9 +402,9 @@ namespace MultiFFBJoy
         conditions[1].lOffset =
         offsetY;
         conditions[1].lPositiveCoefficient =
-        positiveCoefficientY;
+        coefficientY;
         conditions[1].lNegativeCoefficient =
-        negativeCoefficientY;
+        coefficientY;
         conditions[1].dwPositiveSaturation =
         DI_FFNOMINALMAX;
         conditions[1].dwNegativeSaturation =
