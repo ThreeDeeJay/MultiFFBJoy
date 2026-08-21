@@ -456,6 +456,13 @@ namespace MultiFFBJoy
     bool SetSpringForceField(
         const ForceField& forceField)
     {
+        Logf(
+            "SetSpringForceField ENTER: \"%s\" center=(%ld,%ld) power=(%ld,%ld)",
+            forceField.name.c_str(),
+            forceField.centerX,
+            forceField.centerY,
+            forceField.powerX,
+            forceField.powerY);
         if (g_ffbDevice == nullptr)
         {
             Log(
@@ -566,6 +573,9 @@ namespace MultiFFBJoy
             &effect,
             DIEP_DIRECTION |
             DIEP_TYPESPECIFICPARAMS);
+        Logf(
+            "SetSpringForceField SetParameters: HRESULT=0x%08lX",
+            static_cast<unsigned long>(hr));
         if (FAILED(hr))
         {
             Logf(
@@ -586,6 +596,9 @@ namespace MultiFFBJoy
         g_springEffect->Start(
             1,
             0);
+        Logf(
+            "SetSpringForceField Start: HRESULT=0x%08lX",
+            static_cast<unsigned long>(hr));
         if (FAILED(hr))
         {
             Logf(
