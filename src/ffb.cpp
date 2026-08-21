@@ -413,17 +413,14 @@ namespace MultiFFBJoy
         Logf(
             "Spring mapping \"%s\": "
             "offset=(%ld,%ld), power=(%ld,%ld), "
-            "coeff+X=%ld coeff-X=%ld "
-            "coeff+Y=%ld coeff-Y=%ld",
+            "coeff+X=%ld coeff-X=%ld ",
             forceField.name.c_str(),
             forceField.offsetX,
             forceField.offsetY,
             forceField.powerX,
             forceField.powerY,
             positiveCoefficientX,
-            negativeCoefficientX,
-            positiveCoefficientY,
-            negativeCoefficientY);
+            negativeCoefficientX);
         DICONDITION conditions[2]{};
         conditions[0].lOffset =
         springCenterX;
