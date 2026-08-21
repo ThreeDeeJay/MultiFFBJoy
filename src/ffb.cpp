@@ -308,6 +308,17 @@ namespace MultiFFBJoy
             forceField.centerY,
             forceField.powerX,
             forceField.powerY);
+        Logf(
+            "Spring mapping \"%s\": "
+            "offset=(%ld,%ld), power=(%ld,%ld), "
+            "coeff=(%ld,%ld)",
+            forceField.name.c_str(),
+            forceField.offsetX,
+            forceField.offsetY,
+            forceField.powerX,
+            forceField.powerY,
+            coefficientX,
+            coefficientY);
         if (g_ffbDevice == nullptr)
         {
             Log(
