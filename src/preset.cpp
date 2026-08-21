@@ -545,41 +545,58 @@ EnumerateForceFieldPresets()
 }
 void UpdatePresetTest()
 {
+    if (!IsForceFieldPresetLoaded())
+    {
+        return;
+    }
+    if (!EnsureFFBDeviceReady())
+    {
+        return;
+    }
     LONG x = 0;
     LONG y = 0;
     if (!ReadFFBJoystickPosition(x, y))
     {
         return;
     }
-    FFBPreset presetCopy;
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        if (!g_presetTestState.enabled ||
-            g_loadedPreset.forceFields.empty())
-        {
-            return;
-        }
-        presetCopy = g_loadedPreset;
-    }
-    const int zoneIndex =
+    const int forceFieldIndex =
     FindForceFieldAtPosition(x, y);
+    ForceField selectedField;
+    bool haveField = false;
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
-        g_presetTestState.normalizedX =
-        static_cast<float>(x) / 10000.0f;
-        g_presetTestState.normalizedY =
-        static_cast<float>(y) / 10000.0f;
-        if (zoneIndex ==
-            g_presetTestState.activeForceField)
+        if (forceFieldIndex >= 0 &&
+            static_cast<size_t>(forceFieldIndex) <
+            g_loadedPreset.forceFields.size())
         {
-            return;
+            selectedField =
+            g_loadedPreset.forceFields[
+                static_cast<size_t>(forceFieldIndex)];
+            haveField = true;
         }
-        g_presetTestState.activeForceField =
-        zoneIndex;
+        if (g_presetTestState.activeForceField !=
+            forceFieldIndex)
+        {
+            g_presetTestState.activeForceField =
+            forceFieldIndex;
+            g_presetTestState.normalizedX =
+            static_cast<float>(x);
+            g_presetTestState.normalizedY =
+            static_cast<float>(y);
+            changed = true;
+        }
     }
-    if (zoneIndex < 0)
+/*
+* Only change the physical FFB effect when the
+* active zone changes.
+*/
+    if (!changed)
+    {
+        return;
+    }
+    if (!haveField)
     {
         Logf(
             "Preset zone: none (stick X=%ld Y=%ld).",
@@ -588,31 +605,44 @@ void UpdatePresetTest()
         StopSpring();
         return;
     }
-    if (static_cast<size_t>(zoneIndex) >=
-        presetCopy.forceFields.size())
+    Logf(
+        "Preset zone: \"%s\" (index=%d, X=%ld Y=%ld).",
+        selectedField.name.c_str(),
+        forceFieldIndex,
+        x,
+        y);
+    if (selectedField.forceType != 1)
     {
         Logf(
-            "Preset zone index %d is out of range.",
-            zoneIndex);
+            "Preset zone \"%s\" has unsupported "
+            "forceType=%d; stopping spring.",
+            selectedField.name.c_str(),
+            selectedField.forceType);
         StopSpring();
         return;
     }
-    const ForceField& field =
-    presetCopy.forceFields[
-        static_cast<size_t>(zoneIndex)];
-    Logf(
-        "Preset zone: \"%s\" (index=%d, X=%ld Y=%ld).",
-        field.name.c_str(),
-        zoneIndex,
-        x,
-        y);
-    if (field.forceType != 1)
+/*
+* THIS is the important call that was missing.
+*
+* The selected field is a spring forcefield, so send
+* its center and coefficients to DirectInput.
+*/
+    if (SetSpringForceField(selectedField))
     {
         Logf(
-            "Preset zone \"%s\" is not a spring forcefield.",
-            field.name.c_str());
-        StopSpring();
-        return;
+            "Applied spring forcefield \"%s\": "
+            "center=(%ld,%ld), power=(%ld,%ld).",
+            selectedField.name.c_str(),
+            selectedField.centerX,
+            selectedField.centerY,
+            selectedField.powerX,
+            selectedField.powerY);
+    }
+    else
+    {
+        Logf(
+            "Failed to apply spring forcefield \"%s\".",
+            selectedField.name.c_str());
     }
 }
 void StartPresetTestMonitor()
