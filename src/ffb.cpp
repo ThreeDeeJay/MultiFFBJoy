@@ -361,6 +361,33 @@ namespace MultiFFBJoy
             forceField.offsetY,
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
+        LONG springCenterX = 0;
+        LONG springCenterY = 0;
+
+        if (forceField.name == "Park")
+        {
+            springCenterY = -DI_FFNOMINALMAX;
+        }
+        else if (forceField.name == "Reverse")
+        {
+            springCenterY = -3500;
+        }
+        else if (forceField.name == "Neutral")
+        {
+            springCenterY = 3500;
+        }
+        else if (forceField.name == "Drive")
+        {
+            springCenterY = DI_FFNOMINALMAX;
+        }
+        else
+        {
+/*
+ * Generic forcefields continue to use their FORCE OFFSET.
+ */
+            springCenterX = offsetX;
+            springCenterY = offsetY;
+        }
         /*
          * DirectInput's spring condition is a restoring spring:
          *
@@ -399,7 +426,7 @@ namespace MultiFFBJoy
             negativeCoefficientY);
         DICONDITION conditions[2]{};
         conditions[0].lOffset =
-        offsetX;
+        springCenterX;
         conditions[0].lPositiveCoefficient =
         coefficientX;
         conditions[0].lNegativeCoefficient =
@@ -411,7 +438,7 @@ namespace MultiFFBJoy
         conditions[0].lDeadBand =
         0;
         conditions[1].lOffset =
-        offsetY;
+        springCenterY;
         conditions[1].lPositiveCoefficient =
         coefficientY;
         conditions[1].lNegativeCoefficient =
