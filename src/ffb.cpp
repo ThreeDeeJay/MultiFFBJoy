@@ -342,12 +342,12 @@ namespace MultiFFBJoy
         };
         const LONG offsetX =
         std::clamp<LONG>(
-            forceField.centerX,
+            forceField.offsetX,
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
         const LONG offsetY =
         std::clamp<LONG>(
-            forceField.centerY,
+            forceField.offsetY,
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
 /*

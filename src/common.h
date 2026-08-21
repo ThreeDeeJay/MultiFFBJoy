@@ -80,6 +80,8 @@ namespace MultiFFBJoy
         LONG x = 0;
         LONG y = 0;
         LONG z = 0;
+        LONG offsetX = 0;
+        LONG offsetY = 0;
     };
     struct ForceField
     {
