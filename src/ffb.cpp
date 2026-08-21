@@ -457,7 +457,8 @@ namespace MultiFFBJoy
         const ForceField& forceField)
     {
         Logf(
-            "SetSpringForceField ENTER: \"%s\" center=(%ld,%ld) power=(%ld,%ld)",
+            "SetSpringForceField ENTER: \"%s\" "
+            "center=(%ld,%ld) power=(%ld,%ld)",
             forceField.name.c_str(),
             forceField.centerX,
             forceField.centerY,
@@ -478,73 +479,86 @@ namespace MultiFFBJoy
             return false;
         }
 /*
-* The .fff preset coordinates are expressed as:
+* A multi-axis DirectInput spring uses one DICONDITION
+* per axis.
 *
-*     X = -10000 .. +10000
-*     Y = -10000 .. +10000
+* The first condition applies to X.
+* The second condition applies to Y.
 *
-* DirectInput spring offsets use the same X/Y order.
+* IMPORTANT:
 *
-* Therefore:
-*
-*     condition[0].lOffset = centerX
-*     condition[1].lOffset = centerY
+* Do NOT provide/update a direction vector here.
+* A multi-axis condition with one DICONDITION per
+* axis is already axis-aligned and must not be rotated.
 */
-        LONG offset[2] =
-        {
-            std::clamp<LONG>(
-                forceField.centerX,
-                -DI_FFNOMINALMAX,
-                DI_FFNOMINALMAX),
-            std::clamp<LONG>(
-                forceField.centerY,
-                -DI_FFNOMINALMAX,
-                DI_FFNOMINALMAX)
-        };
-/*
-* Preset power values become spring coefficients.
-* They describe stiffness, not force direction.
-*/
-        LONG coefficient[2] =
-        {
-            std::clamp<LONG>(
-                std::abs(forceField.powerX),
-                0,
-                DI_FFNOMINALMAX),
-            std::clamp<LONG>(
-                std::abs(forceField.powerY),
-                0,
-                DI_FFNOMINALMAX)
-        };
         DWORD axes[2] =
         {
             DIJOFS_X,
             DIJOFS_Y
         };
-        LONG directions[2] =
-        {
+        const LONG offsetX =
+        std::clamp<LONG>(
+            forceField.centerX,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+        const LONG offsetY =
+        std::clamp<LONG>(
+            forceField.centerY,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+/*
+* ForceField power is treated as magnitude here.
+*
+* The sign in the .fff power value must NOT turn a
+* spring into a repelling spring. For a zone spring,
+* positive stiffness means "return toward the zone
+* center."
+*/
+        const LONG coefficientX =
+        std::clamp<LONG>(
+            std::abs(forceField.powerX),
             0,
-            0
-        };
+            DI_FFNOMINALMAX);
+        const LONG coefficientY =
+        std::clamp<LONG>(
+            std::abs(forceField.powerY),
+            0,
+            DI_FFNOMINALMAX);
         DICONDITION conditions[2]{};
-        for (int i = 0; i < 2; ++i)
-        {
-            conditions[i].lOffset =
-            offset[i];
-            conditions[i].lPositiveCoefficient =
-            coefficient[i];
-            conditions[i].lNegativeCoefficient =
-            coefficient[i];
-            conditions[i].dwPositiveSaturation =
-            DI_FFNOMINALMAX;
-            conditions[i].dwNegativeSaturation =
-            DI_FFNOMINALMAX;
-            conditions[i].lDeadBand =
-            0;
-        }
+        conditions[0].lOffset =
+        offsetX;
+        conditions[0].lPositiveCoefficient =
+        coefficientX;
+        conditions[0].lNegativeCoefficient =
+        coefficientX;
+        conditions[0].dwPositiveSaturation =
+        DI_FFNOMINALMAX;
+        conditions[0].dwNegativeSaturation =
+        DI_FFNOMINALMAX;
+        conditions[0].lDeadBand =
+        0;
+        conditions[1].lOffset =
+        offsetY;
+        conditions[1].lPositiveCoefficient =
+        coefficientY;
+        conditions[1].lNegativeCoefficient =
+        coefficientY;
+        conditions[1].dwPositiveSaturation =
+        DI_FFNOMINALMAX;
+        conditions[1].dwNegativeSaturation =
+        DI_FFNOMINALMAX;
+        conditions[1].lDeadBand =
+        0;
         DIEFFECT effect{};
         effect.dwSize =
         sizeof(DIEFFECT);
+/*
+* Cartesian + object offsets identifies the axes.
+*
+* There is deliberately NO rglDirection and NO
+* DIEP_DIRECTION update because this is a
+* two-condition, axis-aligned spring.
+*/
         effect.dwFlags =
         DIEFF_CARTESIAN |
         DIEFF_OBJECTOFFSETS;
@@ -563,7 +577,7 @@ namespace MultiFFBJoy
         effect.rgdwAxes =
         axes;
         effect.rglDirection =
-        directions;
+        nullptr;
         effect.cbTypeSpecificParams =
         sizeof(conditions);
         effect.lpvTypeSpecificParams =
@@ -571,10 +585,10 @@ namespace MultiFFBJoy
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
-            DIEP_DIRECTION |
             DIEP_TYPESPECIFICPARAMS);
         Logf(
-            "SetSpringForceField SetParameters: HRESULT=0x%08lX",
+            "SetSpringForceField SetParameters: "
+            "HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
         if (FAILED(hr))
         {
@@ -597,25 +611,23 @@ namespace MultiFFBJoy
             1,
             0);
         Logf(
-            "SetSpringForceField Start: HRESULT=0x%08lX",
+            "SetSpringForceField Start: "
+            "HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
         if (FAILED(hr))
         {
             Logf(
-                "Spring forcefield Start failed for \"%s\": "
-                "HRESULT=0x%08lX",
+                "SetSpringForceField Start failed "
+                "for \"%s\": HRESULT=0x%08lX",
                 forceField.name.c_str(),
                 static_cast<unsigned long>(hr));
             return false;
         }
-        Logf(
-            "Applied spring forcefield \"%s\": "
-            "center=(%ld,%ld), power=(%ld,%ld).",
-            forceField.name.c_str(),
-            forceField.centerX,
-            forceField.centerY,
-            forceField.powerX,
-            forceField.powerY);
+/*
+* Do not emit the "Applied spring forcefield"
+* message here. UpdatePresetTest() owns the
+* user-facing zone/application log.
+*/
         return true;
     }
     bool SetTestConstantForce(LONG x, LONG y)
