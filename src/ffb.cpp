@@ -39,8 +39,7 @@ namespace MultiFFBJoy
         DIEFFECT effect{};
         effect.dwSize = sizeof(DIEFFECT);
         effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
+        DIEFF_CARTESIAN;
         effect.dwDuration = INFINITE;
         effect.dwSamplePeriod = 0;
         effect.dwGain = DI_FFNOMINALMAX;
@@ -323,17 +322,17 @@ namespace MultiFFBJoy
             return false;
         }
 /*
-* A multi-axis DirectInput spring uses one DICONDITION
-* per axis.
-*
-* The first condition applies to X.
-* The second condition applies to Y.
+* For this test, use the physical joystick axes directly.
 *
 * IMPORTANT:
 *
-* Do NOT provide/update a direction vector here.
-* A multi-axis condition with one DICONDITION per
-* axis is already axis-aligned and must not be rotated.
+* Do not use DIEFF_OBJECTOFFSETS.
+* Do not use rglDirection.
+*
+* The DICONDITION entries correspond directly to:
+*
+*     condition[0] = X
+*     condition[1] = Y
 */
         DWORD axes[2] =
         {
@@ -371,23 +370,19 @@ namespace MultiFFBJoy
                 -DI_FFNOMINALMAX,
                 DI_FFNOMINALMAX);
         }
-        /*
-         * DirectInput's spring condition is a restoring spring:
-         *
-         *     positive displacement -> negative force
-         *     negative displacement -> positive force
-         *
-         * Therefore both sides need a coefficient.  FFShifter's
-         * signed FORCE POWER must not be mapped to the positive/
-         * negative coefficient fields; doing that creates a
-         * one-sided spring.
-         */
+/*
+* Use a normal restoring spring on both axes.
+*
+* The previous experiment established that positive
+* coefficients produced the opposite behavior.
+*
+* Keep the signed negative coefficients for now.
+*/
         const LONG coefficientX =
             -std::clamp<LONG>(
                 std::abs(forceField.powerX),
                 0,
                 DI_FFNOMINALMAX);
-        
         const LONG coefficientY =
             -std::clamp<LONG>(
                 std::abs(forceField.powerY),
@@ -395,20 +390,17 @@ namespace MultiFFBJoy
                 DI_FFNOMINALMAX);
         Logf(
             "Spring mapping \"%s\": "
-            "DI equilibrium=(%ld,%ld), "
-            "FFF offset=(%ld,%ld), "
-            "power=(%ld,%ld), "
-            "coeff=(%ld,%ld)",
+            "equilibrium=(%ld,%ld), "
+            "coeffX=%ld coeffY=%ld",
             forceField.name.c_str(),
             springCenterX,
             springCenterY,
-            forceField.offsetX,
-            forceField.offsetY,
-            forceField.powerX,
-            forceField.powerY,
             coefficientX,
             coefficientY);
         DICONDITION conditions[2]{};
+/*
+* X axis
+*/
         conditions[0].lOffset =
         springCenterX;
         conditions[0].lPositiveCoefficient =
@@ -421,6 +413,9 @@ namespace MultiFFBJoy
         DI_FFNOMINALMAX;
         conditions[0].lDeadBand =
         0;
+/*
+* Y axis
+*/
         conditions[1].lOffset =
         springCenterY;
         conditions[1].lPositiveCoefficient =
@@ -437,15 +432,12 @@ namespace MultiFFBJoy
         effect.dwSize =
         sizeof(DIEFFECT);
 /*
-* Cartesian + object offsets identifies the axes.
+* IMPORTANT:
 *
-* There is deliberately NO rglDirection and NO
-* DIEP_DIRECTION update because this is a
-* two-condition, axis-aligned spring.
+* Do NOT specify DIEFF_OBJECTOFFSETS here.
 */
         effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
+        DIEFF_CARTESIAN;
         effect.dwDuration =
         INFINITE;
         effect.dwSamplePeriod =
@@ -460,6 +452,13 @@ namespace MultiFFBJoy
         2;
         effect.rgdwAxes =
         axes;
+/*
+* No direction vector.
+*/
+        effect.rglDirection =
+        nullptr;
+        effect.lpEnvelope =
+        nullptr;
         effect.cbTypeSpecificParams =
         sizeof(conditions);
         effect.lpvTypeSpecificParams =
@@ -479,13 +478,6 @@ namespace MultiFFBJoy
                 "HRESULT=0x%08lX",
                 forceField.name.c_str(),
                 static_cast<unsigned long>(hr));
-            if (hr == DIERR_INPUTLOST ||
-                hr == DIERR_NOTACQUIRED ||
-                hr == DIERR_NOTEXCLUSIVEACQUIRED)
-            {
-                Log(
-                    "Spring forcefield lost device access.");
-            }
             return false;
         }
         hr =
@@ -505,11 +497,6 @@ namespace MultiFFBJoy
                 static_cast<unsigned long>(hr));
             return false;
         }
-/*
-* Do not emit the "Applied spring forcefield"
-* message here. UpdatePresetTest() owns the
-* user-facing zone/application log.
-*/
         return true;
     }
     bool SetTestConstantForce(LONG x, LONG y)
