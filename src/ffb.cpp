@@ -4,27 +4,42 @@ namespace MultiFFBJoy
     bool CreateSpringEffect()
     {
         if (g_ffbDevice == nullptr)
+        {
+            Log("CreateSpringEffect: no FFB device.");
             return false;
+        }
+        if (g_springEffect != nullptr)
+        {
+            g_springEffect->Stop();
+            g_springEffect->Release();
+            g_springEffect = nullptr;
+        }
+        DICONDITION condition{};
+        condition.lOffset = 0;
+        condition.lPositiveCoefficient = -10000;
+        condition.lNegativeCoefficient = -10000;
+        condition.dwPositiveSaturation = 10000;
+        condition.dwNegativeSaturation = 10000;
+        condition.lDeadBand = 0;
         DWORD axes[2] =
         {
             DIJOFS_X,
             DIJOFS_Y
         };
-        DICONDITION conditions[2]{};
-        for (int i = 0; i < 2; ++i)
+        LONG directions[2] =
         {
-            conditions[i].lOffset = 0;
-            conditions[i].lPositiveCoefficient = 0;
-            conditions[i].lNegativeCoefficient = 0;
-            conditions[i].dwPositiveSaturation = DI_FFNOMINALMAX;
-            conditions[i].dwNegativeSaturation = DI_FFNOMINALMAX;
-            conditions[i].lDeadBand = 0;
-        }
+            0,
+            0
+        };
+        DICONDITION conditions[2] =
+        {
+            condition,
+            condition
+        };
         DIEFFECT effect{};
         effect.dwSize = sizeof(DIEFFECT);
         effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
+        DIEFF_CARTESIAN;
         effect.dwDuration = INFINITE;
         effect.dwSamplePeriod = 0;
         effect.dwGain = DI_FFNOMINALMAX;
@@ -32,11 +47,10 @@ namespace MultiFFBJoy
         effect.dwTriggerRepeatInterval = 0;
         effect.cAxes = 2;
         effect.rgdwAxes = axes;
-    // IMPORTANT: no rglDirection for the spring.
-        effect.rglDirection = nullptr;
+        effect.rglDirection = directions;
         effect.lpEnvelope = nullptr;
         effect.cbTypeSpecificParams =
-        sizeof(conditions);
+        sizeof(DICONDITION) * 2;
         effect.lpvTypeSpecificParams =
         conditions;
         effect.dwStartDelay = 0;
@@ -49,8 +63,7 @@ namespace MultiFFBJoy
         if (FAILED(hr))
         {
             Logf(
-                "CreateEffect(GUID_Spring) failed: "
-                "HRESULT=0x%08lX",
+                "CreateEffect(GUID_Spring) failed: HRESULT=0x%08lX",
                 static_cast<unsigned long>(hr));
             g_springEffect = nullptr;
             return false;
