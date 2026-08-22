@@ -340,11 +340,6 @@ namespace MultiFFBJoy
             DIJOFS_X,
             DIJOFS_Y
         };
-        LONG directions[2] =
-        {
-            0,
-            0
-        };
         LONG springCenterX = 0;
         LONG springCenterY = 0;
         if (forceField.name == "Park")
@@ -465,8 +460,6 @@ namespace MultiFFBJoy
         2;
         effect.rgdwAxes =
         axes;
-        effect.rglDirection =
-        directions;
         effect.cbTypeSpecificParams =
         sizeof(conditions);
         effect.lpvTypeSpecificParams =
@@ -474,7 +467,6 @@ namespace MultiFFBJoy
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
-            DIEP_DIRECTION |
             DIEP_TYPESPECIFICPARAMS);
         Logf(
             "SetSpringForceField SetParameters: "
