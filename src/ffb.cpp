@@ -388,7 +388,11 @@ namespace MultiFFBJoy
                 0,
                 DI_FFNOMINALMAX);
         
-        const LONG coefficientY = 0;
+        const LONG coefficientY =
+            std::clamp<LONG>(
+                std::abs(forceField.powerY),
+                0,
+                DI_FFNOMINALMAX);
         Logf(
             "Spring mapping \"%s\": "
             "DI equilibrium=(%ld,%ld), "
