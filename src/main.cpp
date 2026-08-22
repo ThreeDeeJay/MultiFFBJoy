@@ -40,7 +40,11 @@ int APIENTRY wWinMain(
     }
     else
     {
-        Log("FFB joystick initialized successfully.");
+        if (!SelectFirstSuitableDevice())
+        {
+            Log(
+                "No suitable FFB joystick available at startup.");
+        }
     }
     StartFFBWatchdog();
     if (!StartUdpServer())
