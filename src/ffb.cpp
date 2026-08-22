@@ -340,75 +340,13 @@ namespace MultiFFBJoy
             DIJOFS_X,
             DIJOFS_Y
         };
-        /*
-        * FORCEFIELD CENTER describes the geometric location of the
-        * zone.  FORCE OFFSET describes the spring's balance point.
-        *
-        * FFShifter stores OFFSET in its normalized -10000..10000
-        * representation in the .fff file.  DirectInput condition
-        * offsets use the same nominal range.
-        *
-        * Therefore the spring equilibrium comes from OFFSET,
-        * not FORCEFIELD CENTER.
-        */
-        /*
-         * FORCE OFFSET in the FFShifter .fff file does not map
-         * directly to the SideWinder's DirectInput spring
-         * equilibrium.  In particular, the PRND preset uses
-         * OFFSET X to describe FFShifter's force-field behavior,
-         * while the desired physical equilibrium for our
-         * DirectInput spring is along the Y axis.
-         *
-         * The PRND forcefields are:
-         *
-         *     Park    -> top edge
-         *     Reverse -> upper-middle
-         *     Neutral -> lower-middle
-         *     Drive   -> bottom edge
-         *
-         * X remains centered in every zone.
-         */
-        LONG offsetX = 0;
-        LONG offsetY = 0;
-        
-        if (forceField.name == "Park")
+        LONG directions[2] =
         {
-            offsetY = -DI_FFNOMINALMAX;
-        }
-        else if (forceField.name == "Reverse")
-        {
-            offsetY = -3500;
-        }
-        else if (forceField.name == "Neutral")
-        {
-            offsetY = 3500;
-        }
-        else if (forceField.name == "Drive")
-        {
-            offsetY = DI_FFNOMINALMAX;
-        }
-        else
-        {
-            /*
-             * Generic forcefields retain the existing OFFSET
-             * behavior until we have a complete mapping for
-             * other FFShifter force types.
-             */
-            offsetX =
-                std::clamp<LONG>(
-                    forceField.offsetX,
-                    -DI_FFNOMINALMAX,
-                    DI_FFNOMINALMAX);
-        
-            offsetY =
-                std::clamp<LONG>(
-                    forceField.offsetY,
-                    -DI_FFNOMINALMAX,
-                    DI_FFNOMINALMAX);
-        }
+            0,
+            0
+        };
         LONG springCenterX = 0;
         LONG springCenterY = 0;
-
         if (forceField.name == "Park")
         {
             springCenterY = -DI_FFNOMINALMAX;
@@ -427,11 +365,16 @@ namespace MultiFFBJoy
         }
         else
         {
-/*
- * Generic forcefields continue to use their FORCE OFFSET.
- */
-            springCenterX = offsetX;
-            springCenterY = offsetY;
+            springCenterX =
+            std::clamp<LONG>(
+                forceField.offsetX,
+                -DI_FFNOMINALMAX,
+                DI_FFNOMINALMAX);
+            springCenterY =
+            std::clamp<LONG>(
+                forceField.offsetY,
+                -DI_FFNOMINALMAX,
+                DI_FFNOMINALMAX);
         }
         /*
          * DirectInput's spring condition is a restoring spring:
@@ -456,12 +399,14 @@ namespace MultiFFBJoy
                 0,
                 DI_FFNOMINALMAX);
         Logf(
-            "Spring mapping \"%s\": DI equilibrium=(%ld,%ld), "
-            "FFF offset=(%ld,%ld), power=(%ld,%ld), "
+            "Spring mapping \"%s\": "
+            "DI equilibrium=(%ld,%ld), "
+            "FFF offset=(%ld,%ld), "
+            "power=(%ld,%ld), "
             "coeff=(%ld,%ld)",
             forceField.name.c_str(),
-            offsetX,
-            offsetY,
+            springCenterX,
+            springCenterY,
             forceField.offsetX,
             forceField.offsetY,
             forceField.powerX,
@@ -521,7 +466,7 @@ namespace MultiFFBJoy
         effect.rgdwAxes =
         axes;
         effect.rglDirection =
-        nullptr;
+        directions;
         effect.cbTypeSpecificParams =
         sizeof(conditions);
         effect.lpvTypeSpecificParams =
@@ -529,6 +474,7 @@ namespace MultiFFBJoy
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
+            DIEP_DIRECTION |
             DIEP_TYPESPECIFICPARAMS);
         Logf(
             "SetSpringForceField SetParameters: "
