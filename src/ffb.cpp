@@ -382,11 +382,7 @@ namespace MultiFFBJoy
          * negative coefficient fields; doing that creates a
          * one-sided spring.
          */
-        const LONG coefficientX =
-            std::clamp<LONG>(
-                std::abs(forceField.powerX),
-                0,
-                DI_FFNOMINALMAX);
+        const LONG coefficientX = 0;
         
         const LONG coefficientY =
             std::clamp<LONG>(
