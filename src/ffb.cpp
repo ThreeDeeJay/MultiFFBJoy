@@ -16,8 +16,8 @@ namespace MultiFFBJoy
         }
         DICONDITION condition{};
         condition.lOffset = 0;
-        condition.lPositiveCoefficient = 10000;
-        condition.lNegativeCoefficient = 10000;
+        condition.lPositiveCoefficient = -10000;
+        condition.lNegativeCoefficient = -10000;
         condition.dwPositiveSaturation = 10000;
         condition.dwNegativeSaturation = 10000;
         condition.lDeadBand = 0;
@@ -226,7 +226,7 @@ namespace MultiFFBJoy
             return false;
         }
         strength = std::clamp(strength, 0.0f, 1.0f);
-        const LONG coefficient = static_cast<LONG>(
+        const LONG coefficient = -static_cast<LONG>(
             std::lround(
                 strength * static_cast<float>(DI_FFNOMINALMAX)));
         DWORD axes[2] =
@@ -383,13 +383,13 @@ namespace MultiFFBJoy
          * one-sided spring.
          */
         const LONG coefficientX =
-            std::clamp<LONG>(
+            -std::clamp<LONG>(
                 std::abs(forceField.powerX),
                 0,
                 DI_FFNOMINALMAX);
         
         const LONG coefficientY =
-            std::clamp<LONG>(
+            -std::clamp<LONG>(
                 std::abs(forceField.powerY),
                 0,
                 DI_FFNOMINALMAX);
