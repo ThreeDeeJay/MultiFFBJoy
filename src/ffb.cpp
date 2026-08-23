@@ -32,8 +32,12 @@ namespace MultiFFBJoy
         effect.dwTriggerRepeatInterval = 0;
         effect.cAxes = 2;
         effect.rgdwAxes = axes;
-    // IMPORTANT: no rglDirection for the spring.
-        effect.rglDirection = nullptr;
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
+        effect.rglDirection = directions;
         effect.lpEnvelope = nullptr;
         effect.cbTypeSpecificParams =
         sizeof(conditions);
