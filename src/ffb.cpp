@@ -341,14 +341,12 @@ namespace MultiFFBJoy
             coefficientX,
             coefficientY);
         DICONDITION conditions[2]{};
-// X axis: no force.
-        conditions[0].lOffset = 0;
-        conditions[0].lPositiveCoefficient = 0;
-        conditions[0].lNegativeCoefficient = 0;
-        conditions[0].dwPositiveSaturation = 0;
-        conditions[0].dwNegativeSaturation = 0;
+        conditions[0].lOffset = springCenterX;
+        conditions[0].lPositiveCoefficient = coefficientX;
+        conditions[0].lNegativeCoefficient = coefficientX;
+        conditions[0].dwPositiveSaturation = DI_FFNOMINALMAX;
+        conditions[0].dwNegativeSaturation = DI_FFNOMINALMAX;
         conditions[0].lDeadBand = 0;
-// Y axis: restoring spring toward preset center.
         conditions[1].lOffset = springCenterY;
         conditions[1].lPositiveCoefficient = coefficientY;
         conditions[1].lNegativeCoefficient = coefficientY;
