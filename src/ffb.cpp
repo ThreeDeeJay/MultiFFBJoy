@@ -363,14 +363,20 @@ namespace MultiFFBJoy
         effect.dwTriggerRepeatInterval = 0;
         effect.cAxes = 2;
         effect.rgdwAxes = axes;
-        effect.rglDirection = nullptr;
+        LONG directions[2] =
+        {
+            1,
+            0
+        };
+        effect.rglDirection = directions;
         effect.lpEnvelope = nullptr;
         effect.cbTypeSpecificParams = sizeof(conditions);
         effect.lpvTypeSpecificParams = conditions;
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
-            DIEP_TYPESPECIFICPARAMS);
+            DIEP_TYPESPECIFICPARAMS |
+            DIEP_DIRECTION);
         Logf(
             "SetSpringForceField SetParameters: HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
