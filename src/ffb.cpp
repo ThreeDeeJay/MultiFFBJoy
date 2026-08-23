@@ -443,11 +443,12 @@ namespace MultiFFBJoy
         2;
         effect.rgdwAxes =
         axes;
-/*
-* No direction vector.
-*/
-        effect.rglDirection =
-        nullptr;
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
+        effect.rglDirection = directions;
         effect.lpEnvelope =
         nullptr;
         effect.cbTypeSpecificParams =
