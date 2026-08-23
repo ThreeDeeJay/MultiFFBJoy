@@ -291,8 +291,7 @@ namespace MultiFFBJoy
         const ForceField& forceField)
     {
         Logf(
-            "SetSpringForceField ENTER: \"%s\" "
-            "center=(%ld,%ld) power=(%ld,%ld)",
+            "SetSpringForceField ENTER: \"%s\" center=(%ld,%ld) power=(%ld,%ld)",
             forceField.name.c_str(),
             forceField.centerX,
             forceField.centerY,
@@ -300,59 +299,43 @@ namespace MultiFFBJoy
             forceField.powerY);
         if (g_ffbDevice == nullptr)
         {
-            Log(
-                "SetSpringForceField: "
-                "FFB device unavailable.");
+            Log("SetSpringForceField: FFB device unavailable.");
             return false;
         }
         if (g_springEffect == nullptr)
         {
-            Log(
-                "SetSpringForceField: "
-                "Spring effect unavailable.");
+            Log("SetSpringForceField: Spring effect unavailable.");
             return false;
         }
-/*
-* For this test, use the physical joystick axes directly.
-*
-* IMPORTANT:
-*
-* Do not use DIEFF_OBJECTOFFSETS.
-* Do not use rglDirection.
-*
-* The DICONDITION entries correspond directly to:
-*
-*     condition[0] = X
-*     condition[1] = Y
-*/
         DWORD axes[2] =
         {
             DIJOFS_X,
             DIJOFS_Y
         };
-        LONG springCenterX = forceField.centerX;
-        LONG springCenterY = forceField.centerY;
-/*
-* Use a normal restoring spring on both axes.
-*
-* The previous experiment established that positive
-* coefficients produced the opposite behavior.
-*
-* Keep the signed negative coefficients for now.
-*/
-        const LONG coefficientX =
-            std::clamp<LONG>(
-                std::abs(forceField.powerX),
-                0,
-                DI_FFNOMINALMAX);
-        const LONG coefficientY =
-            std::clamp<LONG>(
-                std::abs(forceField.powerY),
-                0,
-                DI_FFNOMINALMAX);
+// The preset defines the equilibrium position directly.
+        const LONG springCenterX =
+        std::clamp<LONG>(
+            forceField.centerX,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+        const LONG springCenterY =
+        std::clamp<LONG>(
+            forceField.centerY,
+            -DI_FFNOMINALMAX,
+            DI_FFNOMINALMAX);
+// PRND is a vertical gate, so don't generate lateral spring force.
+//
+// If you later want arbitrary 2-D spring forcefields, this should
+// become a separate/general mapping rather than deriving X from
+// powerX for PRND.
+        LONG coefficientX = 0;
+        LONG coefficientY =
+        std::clamp<LONG>(
+            std::abs(forceField.powerY),
+            0,
+            DI_FFNOMINALMAX);
         Logf(
-            "Spring mapping \"%s\": "
-            "equilibrium=(%ld,%ld), "
+            "Spring mapping \"%s\": equilibrium=(%ld,%ld), "
             "coeffX=%ld coeffY=%ld",
             forceField.name.c_str(),
             springCenterX,
@@ -360,103 +343,57 @@ namespace MultiFFBJoy
             coefficientX,
             coefficientY);
         DICONDITION conditions[2]{};
-/*
-* X axis
-*/
-        conditions[0].lOffset =
-        springCenterX;
-        conditions[0].lPositiveCoefficient =
-        coefficientX;
-        conditions[0].lNegativeCoefficient =
-        coefficientX;
-        conditions[0].dwPositiveSaturation =
-        DI_FFNOMINALMAX;
-        conditions[0].dwNegativeSaturation =
-        DI_FFNOMINALMAX;
-        conditions[0].lDeadBand =
-        0;
-/*
-* Y axis
-*/
-        conditions[1].lOffset =
-        springCenterY;
-        conditions[1].lPositiveCoefficient =
-        coefficientY;
-        conditions[1].lNegativeCoefficient =
-        coefficientY;
-        conditions[1].dwPositiveSaturation =
-        DI_FFNOMINALMAX;
-        conditions[1].dwNegativeSaturation =
-        DI_FFNOMINALMAX;
-        conditions[1].lDeadBand =
-        0;
+// X axis: no force.
+        conditions[0].lOffset = 0;
+        conditions[0].lPositiveCoefficient = 0;
+        conditions[0].lNegativeCoefficient = 0;
+        conditions[0].dwPositiveSaturation = 0;
+        conditions[0].dwNegativeSaturation = 0;
+        conditions[0].lDeadBand = 0;
+// Y axis: restoring spring toward preset center.
+        conditions[1].lOffset = springCenterY;
+        conditions[1].lPositiveCoefficient = coefficientY;
+        conditions[1].lNegativeCoefficient = coefficientY;
+        conditions[1].dwPositiveSaturation = DI_FFNOMINALMAX;
+        conditions[1].dwNegativeSaturation = DI_FFNOMINALMAX;
+        conditions[1].lDeadBand = 0;
         DIEFFECT effect{};
-        effect.dwSize =
-        sizeof(DIEFFECT);
-/*
-* IMPORTANT:
-*
-* Do NOT specify DIEFF_OBJECTOFFSETS here.
-*/
-        effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
-        effect.dwDuration =
-        INFINITE;
-        effect.dwSamplePeriod =
-        0;
-        effect.dwGain =
-        DI_FFNOMINALMAX;
-        effect.dwTriggerButton =
-        DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval =
-        0;
-        effect.cAxes =
-        2;
-        effect.rgdwAxes =
-        axes;
-        LONG directions[2] =
-        {
-            0,
-            0
-        };
-        effect.rglDirection = directions;
-        effect.lpEnvelope =
-        nullptr;
-        effect.cbTypeSpecificParams =
-        sizeof(conditions);
-        effect.lpvTypeSpecificParams =
-        conditions;
+        effect.dwSize = sizeof(DIEFFECT);
+        effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+        effect.dwDuration = INFINITE;
+        effect.dwSamplePeriod = 0;
+        effect.dwGain = DI_FFNOMINALMAX;
+        effect.dwTriggerButton = DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval = 0;
+        effect.cAxes = 2;
+        effect.rgdwAxes = axes;
+        effect.rglDirection = nullptr;
+        effect.lpEnvelope = nullptr;
+        effect.cbTypeSpecificParams = sizeof(conditions);
+        effect.lpvTypeSpecificParams = conditions;
         HRESULT hr =
         g_springEffect->SetParameters(
             &effect,
             DIEP_TYPESPECIFICPARAMS);
         Logf(
-            "SetSpringForceField SetParameters: "
-            "HRESULT=0x%08lX",
+            "SetSpringForceField SetParameters: HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
         if (FAILED(hr))
         {
             Logf(
-                "SetSpringForceField failed for \"%s\": "
-                "HRESULT=0x%08lX",
+                "SetSpringForceField failed for \"%s\": HRESULT=0x%08lX",
                 forceField.name.c_str(),
                 static_cast<unsigned long>(hr));
             return false;
         }
-        hr =
-        g_springEffect->Start(
-            1,
-            0);
+        hr = g_springEffect->Start(1, 0);
         Logf(
-            "SetSpringForceField Start: "
-            "HRESULT=0x%08lX",
+            "SetSpringForceField Start: HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
         if (FAILED(hr))
         {
             Logf(
-                "SetSpringForceField Start failed "
-                "for \"%s\": HRESULT=0x%08lX",
+                "SetSpringForceField Start failed for \"%s\": HRESULT=0x%08lX",
                 forceField.name.c_str(),
                 static_cast<unsigned long>(hr));
             return false;
