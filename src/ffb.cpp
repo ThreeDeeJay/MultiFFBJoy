@@ -629,19 +629,51 @@ namespace MultiFFBJoy
             Log(
                 "FFB device successfully reinitialized.");
             Log(
-                "Starting persistent center spring after "
-                "successful re-acquisition.");
-            if (!SetSpringStrength(1.0f))
+                "FFB device is exclusively acquired and usable.");
             {
-                Log(
-                    "Failed to start persistent center spring "
-                    "after re-acquisition.");
-                ReleaseFFBDevice();
-                Sleep(RETRY_DELAY_MS);
-                continue;
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_state.acquired = true;
             }
-            Log(
-                "Persistent center spring started successfully.");
+            UpdateStatus();
+            Log("FFB device successfully reinitialized.");
+// Do not automatically apply a center spring here.
+// Startup/reacquisition should leave the joystick limp unless
+// an active forcefield needs to be restored.
+            if (g_springEffect != nullptr)
+            {
+                HRESULT stopHr = g_springEffect->Stop();
+                if (FAILED(stopHr) &&
+                    stopHr != DIERR_INPUTLOST &&
+                    stopHr != DIERR_NOTACQUIRED &&
+                    stopHr != DIERR_NOTEXCLUSIVEACQUIRED &&
+                    stopHr != DIERR_OBJECTNOTFOUND &&
+                    stopHr != static_cast<HRESULT>(0x80040203L))
+                {
+                    Logf(
+                        "Spring Stop after acquisition failed: 0x%08lX",
+                        static_cast<unsigned long>(stopHr));
+                }
+            }
+            if (g_testConstantEffect != nullptr)
+            {
+                HRESULT stopHr = g_testConstantEffect->Stop();
+                if (FAILED(stopHr) &&
+                    stopHr != DIERR_INPUTLOST &&
+                    stopHr != DIERR_NOTACQUIRED &&
+                    stopHr != DIERR_NOTEXCLUSIVEACQUIRED &&
+                    stopHr != DIERR_OBJECTNOTFOUND)
+                {
+                    Logf(
+                        "Constant-force Stop after acquisition failed: 0x%08lX",
+                        static_cast<unsigned long>(stopHr));
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_state.springStrength = 0.0f;
+                g_state.springPersistent = false;
+            }
+            UpdateStatus();
             return true;
         }
         Log(
