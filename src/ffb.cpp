@@ -312,7 +312,6 @@ namespace MultiFFBJoy
             DIJOFS_X,
             DIJOFS_Y
         };
-// The preset defines the equilibrium position directly.
         const LONG springCenterX =
         std::clamp<LONG>(
             forceField.centerX,
@@ -323,13 +322,12 @@ namespace MultiFFBJoy
             forceField.centerY,
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
-// PRND is a vertical gate, so don't generate lateral spring force.
-//
-// If you later want arbitrary 2-D spring forcefields, this should
-// become a separate/general mapping rather than deriving X from
-// powerX for PRND.
-        LONG coefficientX = 0;
-        LONG coefficientY =
+        const LONG coefficientX =
+        std::clamp<LONG>(
+            std::abs(forceField.powerX),
+            0,
+            DI_FFNOMINALMAX);
+        const LONG coefficientY =
         std::clamp<LONG>(
             std::abs(forceField.powerY),
             0,
