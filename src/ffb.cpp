@@ -330,37 +330,8 @@ namespace MultiFFBJoy
             DIJOFS_X,
             DIJOFS_Y
         };
-        LONG springCenterX = 0;
-        LONG springCenterY = 0;
-        if (forceField.name == "Park")
-        {
-            springCenterY = -DI_FFNOMINALMAX;
-        }
-        else if (forceField.name == "Reverse")
-        {
-            springCenterY = -3500;
-        }
-        else if (forceField.name == "Neutral")
-        {
-            springCenterY = 3500;
-        }
-        else if (forceField.name == "Drive")
-        {
-            springCenterY = DI_FFNOMINALMAX;
-        }
-        else
-        {
-            springCenterX =
-            std::clamp<LONG>(
-                forceField.offsetX,
-                -DI_FFNOMINALMAX,
-                DI_FFNOMINALMAX);
-            springCenterY =
-            std::clamp<LONG>(
-                forceField.offsetY,
-                -DI_FFNOMINALMAX,
-                DI_FFNOMINALMAX);
-        }
+        LONG springCenterX = forceField.centerX;
+        LONG springCenterY = forceField.centerY;
 /*
 * Use a normal restoring spring on both axes.
 *
