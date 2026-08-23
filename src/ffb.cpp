@@ -216,7 +216,7 @@ namespace MultiFFBJoy
             return false;
         }
         strength = std::clamp(strength, 0.0f, 1.0f);
-        const LONG coefficient = -static_cast<LONG>(
+        const LONG coefficient = static_cast<LONG>(
             std::lround(
                 strength * static_cast<float>(DI_FFNOMINALMAX)));
         DWORD axes[2] =
