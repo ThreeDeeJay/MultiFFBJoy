@@ -42,6 +42,12 @@ int APIENTRY wWinMain(
     {
         Log("FFB joystick initialized successfully.");
     }
+    if (!ReacquireFFBDevice())
+    {
+        Log(
+            "Initial FFB acquisition failed; "
+            "watchdog will retry later.");
+    }
     StartFFBWatchdog();
     if (!StartUdpServer())
     {
