@@ -393,11 +393,11 @@ namespace MultiFFBJoy
 * X axis
 */
         conditions[0].lOffset =
-        springCenterX;
+        0;
         conditions[0].lPositiveCoefficient =
-        coefficientX;
+        0;
         conditions[0].lNegativeCoefficient =
-        coefficientX;
+        0;
         conditions[0].dwPositiveSaturation =
         DI_FFNOMINALMAX;
         conditions[0].dwNegativeSaturation =
