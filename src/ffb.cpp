@@ -226,7 +226,7 @@ namespace MultiFFBJoy
         };
         LONG directions[2] =
         {
-            0,
+            1,
             0
         };
         DICONDITION conditions[2]{};
