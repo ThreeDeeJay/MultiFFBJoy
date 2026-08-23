@@ -10,6 +10,11 @@ namespace MultiFFBJoy
             DIJOFS_X,
             DIJOFS_Y
         };
+        LONG directions[2] =
+        {
+            0,
+            0
+        };
         DICONDITION conditions[2]{};
         for (int i = 0; i < 2; ++i)
         {
@@ -32,11 +37,6 @@ namespace MultiFFBJoy
         effect.dwTriggerRepeatInterval = 0;
         effect.cAxes = 2;
         effect.rgdwAxes = axes;
-        LONG directions[2] =
-        {
-            0,
-            0
-        };
         effect.rglDirection = directions;
         effect.lpEnvelope = nullptr;
         effect.cbTypeSpecificParams =
@@ -428,7 +428,8 @@ namespace MultiFFBJoy
 * Do NOT specify DIEFF_OBJECTOFFSETS here.
 */
         effect.dwFlags =
-        DIEFF_CARTESIAN;
+        DIEFF_CARTESIAN |
+        DIEFF_OBJECTOFFSETS;
         effect.dwDuration =
         INFINITE;
         effect.dwSamplePeriod =
