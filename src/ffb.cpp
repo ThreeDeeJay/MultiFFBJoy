@@ -323,12 +323,12 @@ namespace MultiFFBJoy
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
         const LONG coefficientX =
-        -std::clamp<LONG>(
+        std::clamp<LONG>(
             std::abs(forceField.powerX),
             0,
             DI_FFNOMINALMAX);
         const LONG coefficientY =
-        -std::clamp<LONG>(
+        std::clamp<LONG>(
             std::abs(forceField.powerY),
             0,
             DI_FFNOMINALMAX);
