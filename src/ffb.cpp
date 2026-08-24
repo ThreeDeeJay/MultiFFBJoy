@@ -233,8 +233,8 @@ namespace MultiFFBJoy
         for (int i = 0; i < 2; ++i)
         {
             conditions[i].lOffset = 0;
-            conditions[i].lPositiveCoefficient = coefficient;
-            conditions[i].lNegativeCoefficient = coefficient;
+            conditions[i].lPositiveCoefficient = -coefficient;
+            conditions[i].lNegativeCoefficient = -coefficient;
             conditions[i].dwPositiveSaturation = DI_FFNOMINALMAX;
             conditions[i].dwNegativeSaturation = DI_FFNOMINALMAX;
             conditions[i].lDeadBand = 0;
