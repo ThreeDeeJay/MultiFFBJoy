@@ -197,7 +197,7 @@ namespace MultiFFBJoy
                     ES_AUTOVSCROLL |
                     ES_READONLY,
                     12,
-                    300,
+                    230,
                     720,
                     280,
                     window,
@@ -277,35 +277,65 @@ namespace MultiFFBJoy
                     GetModuleHandleW(nullptr),
                     nullptr);
                 CreateWindowW(
-                    L"BUTTON", L"PRND Test",
+                    L"BUTTON",
+                    L"PRND Test",
                     WS_CHILD | WS_VISIBLE,
-                    500, 135, 120, 28, window,
+                    410,
+                    135,
+                    100,
+                    32,
+                    window,
                     MakeControlId(IDC_PRND_TEST),
-                    GetModuleHandleW(nullptr), nullptr);
+                    GetModuleHandleW(nullptr),
+                    nullptr);
                 CreateWindowW(
-                    L"BUTTON", L"PRND Park",
+                    L"BUTTON",
+                    L"PRND Park",
                     WS_CHILD | WS_VISIBLE,
-                    500, 167, 120, 28, window,
+                    520,
+                    135,
+                    100,
+                    32,
+                    window,
                     MakeControlId(IDC_PRND_PARK),
-                    GetModuleHandleW(nullptr), nullptr);
+                    GetModuleHandleW(nullptr),
+                    nullptr);
                 CreateWindowW(
-                    L"BUTTON", L"PRND Reverse",
+                    L"BUTTON",
+                    L"PRND Reverse",
                     WS_CHILD | WS_VISIBLE,
-                    500, 199, 120, 28, window,
+                    630,
+                    135,
+                    100,
+                    32,
+                    window,
                     MakeControlId(IDC_PRND_REVERSE),
-                    GetModuleHandleW(nullptr), nullptr);
+                    GetModuleHandleW(nullptr),
+                    nullptr);
                 CreateWindowW(
-                    L"BUTTON", L"PRND Neutral",
+                    L"BUTTON",
+                    L"PRND Neutral",
                     WS_CHILD | WS_VISIBLE,
-                    500, 231, 120, 28, window,
+                    410,
+                    175,
+                    100,
+                    32,
+                    window,
                     MakeControlId(IDC_PRND_NEUTRAL),
-                    GetModuleHandleW(nullptr), nullptr);
+                    GetModuleHandleW(nullptr),
+                    nullptr);
                 CreateWindowW(
-                    L"BUTTON", L"PRND Drive",
+                    L"BUTTON",
+                    L"PRND Drive",
                     WS_CHILD | WS_VISIBLE,
-                    500, 263, 120, 28, window,
+                    520,
+                    175,
+                    100,
+                    32,
+                    window,
                     MakeControlId(IDC_PRND_DRIVE),
-                    GetModuleHandleW(nullptr), nullptr);
+                    GetModuleHandleW(nullptr),
+                    nullptr);
                 CreateWindowExW(
                     0,
                     L"LISTBOX",
@@ -330,8 +360,8 @@ namespace MultiFFBJoy
                     WS_CHILD |
                     WS_VISIBLE |
                     BS_PUSHBUTTON,
-                    410,
-                    135,
+                    630,
+                    175,
                     80,
                     28,
                     window,
@@ -364,13 +394,13 @@ namespace MultiFFBJoy
                     MoveWindow(
                         g_logWindow,
                         12,
-                        300,
+                        240,
                         std::max(
                             100,
                             width - 24),
                         std::max(
                             100,
-                            height - 330),
+                            height - 270),
                         TRUE);
                 }
                 return 0;
@@ -411,27 +441,29 @@ namespace MultiFFBJoy
                     SendUdpCommand("CENTER");
                     return 0;
                 case IDC_PRND_TEST:
-                    if (LoadHardcodedPRNDReference())
                     {
-                        Log("GUI: starting hard-coded PRND position-aware test.");
-                        StartPresetTest();
+                        Log("GUI: hard-coded PRND Test.");
+                        if (LoadHardCodedPRNDReference())
+                        {
+                            StartPresetTest();
+                        }
+                        return 0;
                     }
-                    return 0;
                 case IDC_PRND_PARK:
                     Log("GUI: hard-coded PRND Park.");
-                    ApplyHardcodedPRNDZone(0);
+                    ApplyHardCodedPRNDZone(0);
                     return 0;
                 case IDC_PRND_REVERSE:
                     Log("GUI: hard-coded PRND Reverse.");
-                    ApplyHardcodedPRNDZone(1);
+                    ApplyHardCodedPRNDZone(1);
                     return 0;
                 case IDC_PRND_NEUTRAL:
                     Log("GUI: hard-coded PRND Neutral.");
-                    ApplyHardcodedPRNDZone(2);
+                    ApplyHardCodedPRNDZone(2);
                     return 0;
                 case IDC_PRND_DRIVE:
                     Log("GUI: hard-coded PRND Drive.");
-                    ApplyHardcodedPRNDZone(3);
+                    ApplyHardCodedPRNDZone(3);
                     return 0;
                 case IDC_PRESET_LOAD:
                     {
@@ -568,7 +600,7 @@ namespace MultiFFBJoy
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             760,
-            620,
+            560,
             nullptr,
             nullptr,
             instance,
