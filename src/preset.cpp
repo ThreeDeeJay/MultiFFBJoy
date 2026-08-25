@@ -432,63 +432,6 @@ namespace MultiFFBJoy
                 "Preset monitor thread stopped.");
         }
 } // anonymous namespace
-bool LoadForceFieldPreset(
-    const std::filesystem::path& path)
-{
-    FFBPreset parsed;
-    parsed.path = path;
-    if (!ParseForceFieldFile(
-        path,
-        parsed))
-    {
-        return false;
-    }
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        g_loadedPreset =
-        std::move(parsed);
-    }
-    Logf(
-        "Loaded forcefield preset: %s",
-        path.string().c_str());
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        Logf(
-            "Forcefield preset contains %zu forcefield(s).",
-            g_loadedPreset.forceFields.size());
-        for (size_t i = 0;
-            i < g_loadedPreset.forceFields.size();
-            ++i)
-        {
-            const auto& field =
-            g_loadedPreset.forceFields[i];
-            Logf(
-                "  Zone %zu: \"%s\" center=(%ld,%ld) "
-                "vertices=%zu forceType=%d",
-                i,
-                field.name.c_str(),
-                field.centerX,
-                field.centerY,
-                field.vertices.size(),
-                field.forceType);
-        }
-    }
-    return true;
-}
-void ClearForceFieldPreset()
-{
-    StopPresetTestMonitor();
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        g_loadedPreset = FFBPreset{};
-        g_presetTestState = PresetTestState{};
-    }
-    StopSpring();
-    Log("Forcefield preset cleared.");
-}
 namespace
 {
     ForceField MakeHardcodedPRNDField(
@@ -889,5 +832,62 @@ void StopPresetTest()
     StopSpring();
     Log(
         "Preset zone tracking stopped.");
+}
+bool LoadForceFieldPreset(
+    const std::filesystem::path& path)
+{
+    FFBPreset parsed;
+    parsed.path = path;
+    if (!ParseForceFieldFile(
+        path,
+        parsed))
+    {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_loadedPreset =
+        std::move(parsed);
+    }
+    Logf(
+        "Loaded forcefield preset: %s",
+        path.string().c_str());
+    {
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        Logf(
+            "Forcefield preset contains %zu forcefield(s).",
+            g_loadedPreset.forceFields.size());
+        for (size_t i = 0;
+            i < g_loadedPreset.forceFields.size();
+            ++i)
+        {
+            const auto& field =
+            g_loadedPreset.forceFields[i];
+            Logf(
+                "  Zone %zu: \"%s\" center=(%ld,%ld) "
+                "vertices=%zu forceType=%d",
+                i,
+                field.name.c_str(),
+                field.centerX,
+                field.centerY,
+                field.vertices.size(),
+                field.forceType);
+        }
+    }
+    return true;
+}
+void ClearForceFieldPreset()
+{
+    StopPresetTestMonitor();
+    {
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_loadedPreset = FFBPreset{};
+        g_presetTestState = PresetTestState{};
+    }
+    StopSpring();
+    Log("Forcefield preset cleared.");
 }
 } // namespace MultiFFBJoy
