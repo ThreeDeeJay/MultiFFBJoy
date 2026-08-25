@@ -479,17 +479,130 @@ bool LoadForceFieldPreset(
 }
 void ClearForceFieldPreset()
 {
+    StopPresetTestMonitor();
     {
         std::lock_guard<std::mutex> lock(
             g_presetMutex);
-        g_loadedPreset =
-        FFBPreset{};
-        g_presetTestState =
-        PresetTestState{};
+        g_loadedPreset = FFBPreset{};
+        g_presetTestState = PresetTestState{};
     }
     StopSpring();
-    Log(
-        "Forcefield preset cleared.");
+    Log("Forcefield preset cleared.");
+}
+namespace
+{
+    ForceField MakeHardcodedPRNDField(
+        const char* name,
+        LONG centerY,
+        LONG powerX,
+        LONG powerY,
+        LONG minY,
+        LONG maxY)
+    {
+        ForceField field;
+        field.name = name;
+        field.type = 0;
+        field.shapeType = 0;
+        field.centerX = 0;
+        field.centerY = centerY;
+        field.centerZ = 0;
+        field.forceType = 1;
+        field.powerX = powerX;
+        field.powerY = powerY;
+        // The hard-coded reference deliberately uses the same straight,
+        // full-width rectangular PRND zones as the supplied PRND.fff.
+        field.vertices =
+        {
+            { -10000, minY, 0, 0, 0 },
+            {  10000, minY, 0, 0, 0 },
+            {  10000, maxY, 0, 0, 0 },
+            { -10000, maxY, 0, 0, 0 }
+        };
+        return field;
+    }
+    FFBPreset MakeHardcodedPRNDPreset()
+    {
+        FFBPreset preset;
+        preset.path = "<hard-coded PRND reference>";
+        preset.fileVersion = "reference";
+        // FFShifter profile coordinate layout:
+        //     Park
+        //     Reverse
+        //     Neutral
+        //     Drive
+        // Logical Y is negative at the top and positive at the bottom.
+        preset.forceFields.push_back(
+            MakeHardcodedPRNDField(
+                "Park",
+                -8500,
+                -10000,
+                10000,
+                -10000,
+                -6000));
+        preset.forceFields.push_back(
+            MakeHardcodedPRNDField(
+                "Reverse",
+                -3500,
+                10000,
+                10000,
+                -6000,
+                0));
+        preset.forceFields.push_back(
+            MakeHardcodedPRNDField(
+                "Neutral",
+                3500,
+                10000,
+                10000,
+                0,
+                6000));
+        preset.forceFields.push_back(
+            MakeHardcodedPRNDField(
+                "Drive",
+                8500,
+                -10000,
+                10000,
+                6000,
+                10000));
+        return preset;
+    }
+}
+bool LoadHardcodedPRNDReference()
+{
+    StopPresetTest();
+    FFBPreset preset = MakeHardcodedPRNDPreset();
+    {
+        std::lock_guard<std::mutex> lock(g_presetMutex);
+        g_loadedPreset = std::move(preset);
+        g_presetTestState = PresetTestState{};
+    }
+    Log("Loaded hard-coded PRND reference (equivalent straight PRND profile).");
+    LogZoneSummary(g_loadedPreset);
+    return true;
+}
+bool ApplyHardcodedPRNDZone(int zoneIndex)
+{
+    if (zoneIndex < 0 || zoneIndex > 3)
+        return false;
+    StopPresetTest();
+    if (!LoadHardcodedPRNDReference())
+        return false;
+    ForceField field;
+    {
+        std::lock_guard<std::mutex> lock(g_presetMutex);
+        field = g_loadedPreset.forceFields[static_cast<size_t>(zoneIndex)];
+        g_presetTestState.enabled = false;
+        g_presetTestState.activeForceField = zoneIndex;
+    }
+    if (!EnsureFFBDeviceReady())
+    {
+        Log("Hard-coded PRND zone test: FFB device unavailable.");
+        return false;
+    }
+    Logf(
+        "Hard-coded PRND zone: %s (index=%d).",
+        field.name.c_str(),
+        zoneIndex);
+    return SetSpringForceField(field);
 }
 bool IsForceFieldPresetLoaded()
 {

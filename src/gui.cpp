@@ -197,7 +197,7 @@ namespace MultiFFBJoy
                     ES_AUTOVSCROLL |
                     ES_READONLY,
                     12,
-                    230,
+                    300,
                     720,
                     280,
                     window,
@@ -276,6 +276,36 @@ namespace MultiFFBJoy
                     MakeControlId(IDC_FFB_CENTER),
                     GetModuleHandleW(nullptr),
                     nullptr);
+                CreateWindowW(
+                    L"BUTTON", L"PRND Test",
+                    WS_CHILD | WS_VISIBLE,
+                    500, 135, 120, 28, window,
+                    MakeControlId(IDC_PRND_TEST),
+                    GetModuleHandleW(nullptr), nullptr);
+                CreateWindowW(
+                    L"BUTTON", L"PRND Park",
+                    WS_CHILD | WS_VISIBLE,
+                    500, 167, 120, 28, window,
+                    MakeControlId(IDC_PRND_PARK),
+                    GetModuleHandleW(nullptr), nullptr);
+                CreateWindowW(
+                    L"BUTTON", L"PRND Reverse",
+                    WS_CHILD | WS_VISIBLE,
+                    500, 199, 120, 28, window,
+                    MakeControlId(IDC_PRND_REVERSE),
+                    GetModuleHandleW(nullptr), nullptr);
+                CreateWindowW(
+                    L"BUTTON", L"PRND Neutral",
+                    WS_CHILD | WS_VISIBLE,
+                    500, 231, 120, 28, window,
+                    MakeControlId(IDC_PRND_NEUTRAL),
+                    GetModuleHandleW(nullptr), nullptr);
+                CreateWindowW(
+                    L"BUTTON", L"PRND Drive",
+                    WS_CHILD | WS_VISIBLE,
+                    500, 263, 120, 28, window,
+                    MakeControlId(IDC_PRND_DRIVE),
+                    GetModuleHandleW(nullptr), nullptr);
                 CreateWindowExW(
                     0,
                     L"LISTBOX",
@@ -334,13 +364,13 @@ namespace MultiFFBJoy
                     MoveWindow(
                         g_logWindow,
                         12,
-                        240,
+                        300,
                         std::max(
                             100,
                             width - 24),
                         std::max(
                             100,
-                            height - 270),
+                            height - 330),
                         TRUE);
                 }
                 return 0;
@@ -379,6 +409,29 @@ namespace MultiFFBJoy
                     }
                 case IDC_FFB_CENTER:
                     SendUdpCommand("CENTER");
+                    return 0;
+                case IDC_PRND_TEST:
+                    if (LoadHardcodedPRNDReference())
+                    {
+                        Log("GUI: starting hard-coded PRND position-aware test.");
+                        StartPresetTest();
+                    }
+                    return 0;
+                case IDC_PRND_PARK:
+                    Log("GUI: hard-coded PRND Park.");
+                    ApplyHardcodedPRNDZone(0);
+                    return 0;
+                case IDC_PRND_REVERSE:
+                    Log("GUI: hard-coded PRND Reverse.");
+                    ApplyHardcodedPRNDZone(1);
+                    return 0;
+                case IDC_PRND_NEUTRAL:
+                    Log("GUI: hard-coded PRND Neutral.");
+                    ApplyHardcodedPRNDZone(2);
+                    return 0;
+                case IDC_PRND_DRIVE:
+                    Log("GUI: hard-coded PRND Drive.");
+                    ApplyHardcodedPRNDZone(3);
                     return 0;
                 case IDC_PRESET_LOAD:
                     {
@@ -515,7 +568,7 @@ namespace MultiFFBJoy
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             760,
-            560,
+            620,
             nullptr,
             nullptr,
             instance,

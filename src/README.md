@@ -28,3 +28,28 @@ Also:
   be restored after a device loss.
 - Normal STOP clears springPersistent.
 - UDP shutdown and watchdog shutdown are separate.
+
+## PRND reference test
+
+The GUI now includes a hard-coded PRND reference test independent of `.fff` parsing:
+
+- `PRND Test` loads an in-memory straight PRND preset and starts the existing position-aware monitor.
+- `PRND Park`, `PRND Reverse`, `PRND Neutral`, and `PRND Drive` apply one reference spring directly.
+
+The hard-coded reference uses the supplied profile values:
+
+- Park: center `(0,-8500)`, power `(-10000,10000)`
+- Reverse: center `(0,-3500)`, power `(10000,10000)`
+- Neutral: center `(0,3500)`, power `(10000,10000)`
+- Drive: center `(0,8500)`, power `(-10000,10000)`
+
+The reference zones are full-width straight rectangles in FFShifter coordinates, ordered top-to-bottom as Park, Reverse, Neutral, Drive.
+
+### FFB2 condition-axis mapping
+
+Observed behavior from the FFB2 showed that the old implementation put the logical vertical offset into `DICONDITION[1]`, while that condition slot produced the horizontal physical pull. The new implementation therefore translates logical FFShifter X/Y to FFB2 condition slots as:
+
+- `condition[0]` = logical Y
+- `condition[1]` = logical X
+
+The log prints the actual condition offsets and coefficients whenever a reference zone is applied, making this easy to verify against the physical stick behavior.

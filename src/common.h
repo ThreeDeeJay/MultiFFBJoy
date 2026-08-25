@@ -27,6 +27,11 @@ namespace MultiFFBJoy
     inline constexpr int IDC_FFB_RIGHT = 2004;
     inline constexpr int IDC_FFB_STOP = 2005;
     inline constexpr int IDC_FFB_CENTER = 2006;
+    inline constexpr int IDC_PRND_TEST = 2007;
+    inline constexpr int IDC_PRND_PARK = 2008;
+    inline constexpr int IDC_PRND_REVERSE = 2009;
+    inline constexpr int IDC_PRND_NEUTRAL = 2010;
+    inline constexpr int IDC_PRND_DRIVE = 2011;
     inline constexpr int IDC_PRESET_LIST = 2101;
     inline constexpr int IDC_PRESET_LOAD = 2102;
     inline constexpr LONG FFB_COORD_MIN = -10000;
@@ -201,6 +206,8 @@ template <typename... Args>
     int FindForceFieldAtPosition(
         LONG x,
         LONG y);
+    bool LoadHardcodedPRNDReference();
+    bool ApplyHardcodedPRNDZone(int zoneIndex);
     bool IsForceFieldPresetLoaded();
     std::filesystem::path
     GetLoadedForceFieldPresetPath();

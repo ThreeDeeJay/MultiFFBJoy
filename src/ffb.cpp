@@ -1,83 +1,75 @@
 #include "common.h"
 namespace MultiFFBJoy
 {
+    namespace
+    {
+        // The SideWinder FFB2 exposes the two condition slots in the
+        // opposite order from the logical X/Y coordinates we read from
+        // DIJOYSTATE2.  The old code put logical Y into condition[1],
+        // which is why a vertical PRND offset produced a horizontal pull.
+        // Keep the logical FFShifter coordinates as X/Y and translate them
+        // to the FFB2 condition slots here.
+        constexpr bool SWAP_FFB2_CONDITION_AXES = true;
+        void BuildSpringConditions(
+            LONG logicalCenterX,
+            LONG logicalCenterY,
+            LONG coefficientX,
+            LONG coefficientY,
+            DICONDITION (&conditions)[2])
+        {
+            const LONG logicalCoefficientX =
+                std::clamp<LONG>(
+                    std::abs(coefficientX),
+                    0,
+                    DI_FFNOMINALMAX);
+            const LONG logicalCoefficientY =
+                std::clamp<LONG>(
+                    std::abs(coefficientY),
+                    0,
+                    DI_FFNOMINALMAX);
+            for (auto& condition : conditions)
+            {
+                condition = DICONDITION{};
+                condition.dwPositiveSaturation = DI_FFNOMINALMAX;
+                condition.dwNegativeSaturation = DI_FFNOMINALMAX;
+                condition.lDeadBand = 0;
+            }
+            if (SWAP_FFB2_CONDITION_AXES)
+            {
+                conditions[0].lOffset = logicalCenterY;
+                conditions[0].lPositiveCoefficient = logicalCoefficientY;
+                conditions[0].lNegativeCoefficient = logicalCoefficientY;
+                conditions[1].lOffset = logicalCenterX;
+                conditions[1].lPositiveCoefficient = logicalCoefficientX;
+                conditions[1].lNegativeCoefficient = logicalCoefficientX;
+            }
+            else
+            {
+                conditions[0].lOffset = logicalCenterX;
+                conditions[0].lPositiveCoefficient = logicalCoefficientX;
+                conditions[0].lNegativeCoefficient = logicalCoefficientX;
+                conditions[1].lOffset = logicalCenterY;
+                conditions[1].lPositiveCoefficient = logicalCoefficientY;
+                conditions[1].lNegativeCoefficient = logicalCoefficientY;
+            }
+        }
+    }
     bool CreateSpringEffect()
     {
         if (g_ffbDevice == nullptr)
             return false;
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG directions[2] =
-        {
-            1,
-            0
-        };
+        DWORD axes[2] = { DIJOFS_X, DIJOFS_Y };
+        LONG directions[2] = { 1, 0 };
         DICONDITION conditions[2]{};
-        for (int i = 0; i < 2; ++i)
+        for (auto& condition : conditions)
         {
-            conditions[i].lOffset = 0;
-            conditions[i].lPositiveCoefficient = 0;
-            conditions[i].lNegativeCoefficient = 0;
-            conditions[i].dwPositiveSaturation = DI_FFNOMINALMAX;
-            conditions[i].dwNegativeSaturation = DI_FFNOMINALMAX;
-            conditions[i].lDeadBand = 0;
+            condition.lOffset = 0;
+            condition.lPositiveCoefficient = 0;
+            condition.lNegativeCoefficient = 0;
+            condition.dwPositiveSaturation = DI_FFNOMINALMAX;
+            condition.dwNegativeSaturation = DI_FFNOMINALMAX;
+            condition.lDeadBand = 0;
         }
-        DIEFFECT effect{};
-        effect.dwSize = sizeof(DIEFFECT);
-        effect.dwFlags =
-        DIEFF_CARTESIAN |
-        DIEFF_OBJECTOFFSETS;
-        effect.dwDuration = INFINITE;
-        effect.dwSamplePeriod = 0;
-        effect.dwGain = DI_FFNOMINALMAX;
-        effect.dwTriggerButton = DIEB_NOTRIGGER;
-        effect.dwTriggerRepeatInterval = 0;
-        effect.cAxes = 2;
-        effect.rgdwAxes = axes;
-        effect.rglDirection = directions;
-        effect.lpEnvelope = nullptr;
-        effect.cbTypeSpecificParams =
-        sizeof(conditions);
-        effect.lpvTypeSpecificParams =
-        conditions;
-        effect.dwStartDelay = 0;
-        HRESULT hr =
-        g_ffbDevice->CreateEffect(
-            GUID_Spring,
-            &effect,
-            &g_springEffect,
-            nullptr);
-        if (FAILED(hr))
-        {
-            Logf(
-                "CreateEffect(GUID_Spring) failed: "
-                "HRESULT=0x%08lX",
-                static_cast<unsigned long>(hr));
-            g_springEffect = nullptr;
-            return false;
-        }
-        Log("Spring effect created successfully.");
-        return true;
-    }
-    bool CreateTestConstantForceEffect()
-    {
-        if (g_ffbDevice == nullptr)
-            return false;
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG directions[2] =
-        {
-            0,
-            0
-        };
-        DICONSTANTFORCE constantForce{};
-        constantForce.lMagnitude = 0;
         DIEFFECT effect{};
         effect.dwSize = sizeof(DIEFFECT);
         effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
@@ -89,7 +81,42 @@ namespace MultiFFBJoy
         effect.cAxes = 2;
         effect.rgdwAxes = axes;
         effect.rglDirection = directions;
-        effect.lpEnvelope = nullptr;
+        effect.cbTypeSpecificParams = sizeof(conditions);
+        effect.lpvTypeSpecificParams = conditions;
+        HRESULT hr = g_ffbDevice->CreateEffect(
+            GUID_Spring,
+            &effect,
+            &g_springEffect,
+            nullptr);
+        if (FAILED(hr))
+        {
+            Logf(
+                "CreateEffect(GUID_Spring) failed: HRESULT=0x%08lX",
+                static_cast<unsigned long>(hr));
+            g_springEffect = nullptr;
+            return false;
+        }
+        Log("Spring effect created successfully.");
+        return true;
+    }
+    bool CreateTestConstantForceEffect()
+    {
+        if (g_ffbDevice == nullptr)
+            return false;
+        DWORD axes[2] = { DIJOFS_X, DIJOFS_Y };
+        LONG directions[2] = { 0, 0 };
+        DICONSTANTFORCE constantForce{};
+        DIEFFECT effect{};
+        effect.dwSize = sizeof(DIEFFECT);
+        effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+        effect.dwDuration = INFINITE;
+        effect.dwSamplePeriod = 0;
+        effect.dwGain = DI_FFNOMINALMAX;
+        effect.dwTriggerButton = DIEB_NOTRIGGER;
+        effect.dwTriggerRepeatInterval = 0;
+        effect.cAxes = 2;
+        effect.rgdwAxes = axes;
+        effect.rglDirection = directions;
         effect.cbTypeSpecificParams = sizeof(DICONSTANTFORCE);
         effect.lpvTypeSpecificParams = &constantForce;
         HRESULT hr = g_ffbDevice->CreateEffect(
@@ -111,40 +138,21 @@ namespace MultiFFBJoy
     bool IsFFBDeviceUsable()
     {
         if (g_ffbDevice == nullptr)
-        {
             return false;
-        }
         DIJOYSTATE2 state{};
-        const HRESULT hr =
-        g_ffbDevice->GetDeviceState(
+        const HRESULT hr = g_ffbDevice->GetDeviceState(
             sizeof(DIJOYSTATE2),
             &state);
         if (SUCCEEDED(hr))
-        {
             return true;
-        }
-/*
-* These HRESULTs mean DirectInput currently cannot provide
-* the device state. They do NOT necessarily mean that the
-* physical device has disappeared or that the COM device
-* object is permanently unusable.
-*
-* In particular, DIERR_INPUTLOST and DIERR_NOTACQUIRED can
-* occur during ownership/focus transitions.
-*/
         if (hr == DIERR_INPUTLOST ||
             hr == DIERR_NOTACQUIRED ||
             hr == DIERR_NOTEXCLUSIVEACQUIRED)
         {
             return false;
         }
-/*
-* Unexpected failure. Keep the diagnostic because this is
-* something the watchdog should investigate.
-*/
         Logf(
-            "FFB device health check failed unexpectedly: "
-            "0x%08lX",
+            "FFB device health check failed unexpectedly: 0x%08lX",
             static_cast<unsigned long>(hr));
         return false;
     }
@@ -152,7 +160,7 @@ namespace MultiFFBJoy
     {
         if (g_springEffect == nullptr)
             return;
-        HRESULT hr = g_springEffect->Stop();
+        const HRESULT hr = g_springEffect->Stop();
         if (FAILED(hr) &&
             hr != DIERR_INPUTLOST &&
             hr != DIERR_NOTACQUIRED &&
@@ -173,7 +181,7 @@ namespace MultiFFBJoy
     {
         if (g_springEffect != nullptr)
         {
-            HRESULT hr = g_springEffect->Stop();
+            const HRESULT hr = g_springEffect->Stop();
             if (FAILED(hr) &&
                 hr != DIERR_INPUTLOST &&
                 hr != DIERR_NOTACQUIRED &&
@@ -197,7 +205,7 @@ namespace MultiFFBJoy
     {
         if (g_testConstantEffect == nullptr)
             return;
-        HRESULT hr = g_testConstantEffect->Stop();
+        const HRESULT hr = g_testConstantEffect->Stop();
         if (FAILED(hr) &&
             hr != DIERR_INPUTLOST &&
             hr != DIERR_NOTACQUIRED &&
@@ -219,26 +227,15 @@ namespace MultiFFBJoy
         const LONG coefficient = static_cast<LONG>(
             std::lround(
                 strength * static_cast<float>(DI_FFNOMINALMAX)));
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG directions[2] =
-        {
-            1,
-            0
-        };
+        DWORD axes[2] = { DIJOFS_X, DIJOFS_Y };
+        LONG directions[2] = { 1, 0 };
         DICONDITION conditions[2]{};
-        for (int i = 0; i < 2; ++i)
-        {
-            conditions[i].lOffset = 0;
-            conditions[i].lPositiveCoefficient = -coefficient;
-            conditions[i].lNegativeCoefficient = -coefficient;
-            conditions[i].dwPositiveSaturation = DI_FFNOMINALMAX;
-            conditions[i].dwNegativeSaturation = DI_FFNOMINALMAX;
-            conditions[i].lDeadBand = 0;
-        }
+        BuildSpringConditions(
+            0,
+            0,
+            coefficient,
+            coefficient,
+            conditions);
         DIEFFECT effect{};
         effect.dwSize = sizeof(DIEFFECT);
         effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
@@ -260,12 +257,6 @@ namespace MultiFFBJoy
             Logf(
                 "SetParameters(Spring) failed: 0x%08lX",
                 static_cast<unsigned long>(hr));
-            if (hr == DIERR_INPUTLOST ||
-                hr == DIERR_NOTACQUIRED ||
-                hr == DIERR_NOTEXCLUSIVEACQUIRED)
-            {
-                Log("Spring effect lost device access.");
-            }
             return false;
         }
         hr = g_springEffect->Start(1, 0);
@@ -287,72 +278,60 @@ namespace MultiFFBJoy
             strength);
         return true;
     }
-    bool SetSpringForceField(
-        const ForceField& forceField)
+    bool SetSpringForceField(const ForceField& forceField)
     {
-        Logf(
-            "SetSpringForceField ENTER: \"%s\" center=(%ld,%ld) power=(%ld,%ld)",
-            forceField.name.c_str(),
-            forceField.centerX,
-            forceField.centerY,
-            forceField.powerX,
-            forceField.powerY);
-        if (g_ffbDevice == nullptr)
+        if (g_ffbDevice == nullptr || g_springEffect == nullptr)
         {
-            Log("SetSpringForceField: FFB device unavailable.");
+            Log("SetSpringForceField: FFB device/effect unavailable.");
             return false;
         }
-        if (g_springEffect == nullptr)
-        {
-            Log("SetSpringForceField: Spring effect unavailable.");
-            return false;
-        }
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        const LONG springCenterX =
-        std::clamp<LONG>(
+        const LONG centerX = std::clamp<LONG>(
             forceField.centerX,
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
-        const LONG springCenterY =
-        std::clamp<LONG>(
+        const LONG centerY = std::clamp<LONG>(
             forceField.centerY,
             -DI_FFNOMINALMAX,
             DI_FFNOMINALMAX);
-        const LONG coefficientX =
-        std::clamp<LONG>(
+        const LONG coefficientX = std::clamp<LONG>(
             std::abs(forceField.powerX),
             0,
             DI_FFNOMINALMAX);
-        const LONG coefficientY =
-        std::clamp<LONG>(
+        const LONG coefficientY = std::clamp<LONG>(
             std::abs(forceField.powerY),
             0,
             DI_FFNOMINALMAX);
         Logf(
-            "Spring mapping \"%s\": equilibrium=(%ld,%ld), "
-            "coeffX=%ld coeffY=%ld",
+            "SetSpringForceField ENTER: \"%s\" logical equilibrium=(%ld,%ld) power=(%ld,%ld)",
             forceField.name.c_str(),
-            springCenterX,
-            springCenterY,
+            centerX,
+            centerY,
+            forceField.powerX,
+            forceField.powerY);
+        Logf(
+            "Spring mapping \"%s\": FFB2 condition[0]=logical Y, condition[1]=logical X; coeff=(%ld,%ld)",
+            forceField.name.c_str(),
             coefficientX,
             coefficientY);
+        DWORD axes[2] = { DIJOFS_X, DIJOFS_Y };
+        LONG directions[2] = { 1, 0 };
         DICONDITION conditions[2]{};
-        conditions[0].lOffset = offsetX;
-        conditions[0].lPositiveCoefficient = coefficientX;
-        conditions[0].lNegativeCoefficient = coefficientX;
-        conditions[0].dwPositiveSaturation = DI_FFNOMINALMAX;
-        conditions[0].dwNegativeSaturation = DI_FFNOMINALMAX;
-        conditions[0].lDeadBand = 0;
-        conditions[1].lOffset = offsetY;
-        conditions[1].lPositiveCoefficient = coefficientY;
-        conditions[1].lNegativeCoefficient = coefficientY;
-        conditions[1].dwPositiveSaturation = DI_FFNOMINALMAX;
-        conditions[1].dwNegativeSaturation = DI_FFNOMINALMAX;
-        conditions[1].lDeadBand = 0;
+        BuildSpringConditions(
+            centerX,
+            centerY,
+            coefficientX,
+            coefficientY,
+            conditions);
+        Logf(
+            "  condition[0]: offset=%ld +coeff=%ld -coeff=%ld",
+            conditions[0].lOffset,
+            conditions[0].lPositiveCoefficient,
+            conditions[0].lNegativeCoefficient);
+        Logf(
+            "  condition[1]: offset=%ld +coeff=%ld -coeff=%ld",
+            conditions[1].lOffset,
+            conditions[1].lPositiveCoefficient,
+            conditions[1].lNegativeCoefficient);
         DIEFFECT effect{};
         effect.dwSize = sizeof(DIEFFECT);
         effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
@@ -363,43 +342,29 @@ namespace MultiFFBJoy
         effect.dwTriggerRepeatInterval = 0;
         effect.cAxes = 2;
         effect.rgdwAxes = axes;
-        LONG directions[2] =
-        {
-            1,
-            0
-        };
         effect.rglDirection = directions;
-        effect.lpEnvelope = nullptr;
         effect.cbTypeSpecificParams = sizeof(conditions);
         effect.lpvTypeSpecificParams = conditions;
-        HRESULT hr =
-        g_springEffect->SetParameters(
+        HRESULT hr = g_springEffect->SetParameters(
             &effect,
-            DIEP_TYPESPECIFICPARAMS |
-            DIEP_DIRECTION);
+            DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION);
         Logf(
             "SetSpringForceField SetParameters: HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
         if (FAILED(hr))
-        {
-            Logf(
-                "SetSpringForceField failed for \"%s\": HRESULT=0x%08lX",
-                forceField.name.c_str(),
-                static_cast<unsigned long>(hr));
             return false;
-        }
         hr = g_springEffect->Start(1, 0);
         Logf(
             "SetSpringForceField Start: HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
         if (FAILED(hr))
-        {
-            Logf(
-                "SetSpringForceField Start failed for \"%s\": HRESULT=0x%08lX",
-                forceField.name.c_str(),
-                static_cast<unsigned long>(hr));
             return false;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            g_state.springStrength = 1.0f;
+            g_state.springPersistent = true;
         }
+        UpdateStatus();
         return true;
     }
     bool SetTestConstantForce(LONG x, LONG y)
@@ -409,29 +374,15 @@ namespace MultiFFBJoy
             Log("SetTestConstantForce: FFB device/effect unavailable.");
             return false;
         }
-        x = std::clamp<LONG>(
-            x,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
-        y = std::clamp<LONG>(
-            y,
-            -DI_FFNOMINALMAX,
-            DI_FFNOMINALMAX);
+        x = std::clamp<LONG>(x, -DI_FFNOMINALMAX, DI_FFNOMINALMAX);
+        y = std::clamp<LONG>(y, -DI_FFNOMINALMAX, DI_FFNOMINALMAX);
         if (x == 0 && y == 0)
         {
             StopTestConstantForce();
             return true;
         }
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG direction[2] =
-        {
-            x,
-            y
-        };
+        DWORD axes[2] = { DIJOFS_X, DIJOFS_Y };
+        LONG direction[2] = { x, y };
         const LONG magnitude = static_cast<LONG>(
             std::min(
                 static_cast<long long>(DI_FFNOMINALMAX),
