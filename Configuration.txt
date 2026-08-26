@@ -1,0 +1,8 @@
+Profiles
+	BeamNG.drive
+		Car
+			Ibishu Miramar=PRND
+				Base=5RDR
+				Luxe Mira-Matic=PRNDL
+		Aircraft
+			Cessplane L19=Flightstick

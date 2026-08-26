@@ -110,7 +110,7 @@ end
       log("No active player vehicle.")
       return
     end
-    requestReacquire()
+    describeVehicle(vehicleId)
   end
   local function onVehicleSwitched(oldId, newId)
     log(
@@ -191,6 +191,96 @@ local function onExtensionUnloaded()
   end
   udp = nil
   socket = nil
+end
+local function getVehicleObject(vehicleId)
+  if vehicleId == nil or vehicleId == 0 then
+    return nil
+  end
+  local ok, object = pcall(function()
+    return be:getObjectByID(vehicleId)
+  end)
+  if not ok then
+    log(
+      "getObjectByID failed: "
+      .. tostring(object)
+      )
+    return nil
+  end
+  return object
+end
+local function readVehicleValue(
+    vehicle,
+    field,
+    fallback)
+  if vehicle == nil then
+    return fallback
+  end
+  local ok, value = pcall(function()
+    return vehicle[field]
+  end)
+  if ok and value ~= nil then
+    return value
+  end
+  return fallback
+end
+local function describeVehicle(vehicleId)
+  local vehicle =
+    getVehicleObject(vehicleId)
+  if vehicle == nil then
+    return
+  end
+  log(
+    "Vehicle object acquired: "
+    .. tostring(vehicleId))
+  local fields = {
+    "jbeam",
+    "config",
+    "configuration",
+    "vehicleType",
+    "transmission",
+    "gearboxMode",
+  }
+  for _, field in ipairs(fields) do
+    local ok, value =
+      pcall(function()
+        return vehicle[field]
+      end)
+    if ok then
+      log(
+        "Vehicle field "
+        .. field
+        .. " = "
+        .. tostring(value))
+    else
+      log(
+        "Vehicle field "
+        .. field
+        .. " unavailable.")
+    end
+  end
+  /*
+   * Electrics are particularly useful because BeamNG
+   * documents gear, gearIndex and gearboxMode.
+   */
+  local electrics =
+    vehicle.electrics
+  if electrics ~= nil then
+    local gear =
+      electrics.gear
+    local gearIndex =
+      electrics.gearIndex
+    local gearboxMode =
+      electrics.gearboxMode
+    log(
+      "Electrics: gear="
+      .. tostring(gear)
+      .. " gearIndex="
+      .. tostring(gearIndex)
+      .. " gearboxMode="
+      .. tostring(gearboxMode))
+  else
+    log("Vehicle electrics object unavailable.")
+  end
 end
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded

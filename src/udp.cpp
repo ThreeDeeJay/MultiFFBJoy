@@ -12,6 +12,90 @@ namespace MultiFFBJoy
             Log("RX: PING");
             return;
         }
+        if (operation == "PROFILE")
+        {
+            VehicleProfileRequest request;
+            std::string field;
+            while (stream >> field)
+            {
+                const size_t equals =
+                field.find('=');
+                if (equals == std::string::npos)
+                    continue;
+                const std::string key =
+                field.substr(0, equals);
+                const std::string value =
+                field.substr(equals + 1);
+                if (key == "game")
+                {
+                    request.game = value;
+                }
+                else if (key == "type")
+                {
+                    request.vehicleType = value;
+                }
+                else if (key == "vehicle")
+                {
+                    request.vehicle = value;
+                }
+                else if (key == "config")
+                {
+                    request.configuration = value;
+                }
+                else if (key == "transmission")
+                {
+                    request.transmission = value;
+                }
+            }
+            Logf(
+                "RX: PROFILE game=\"%s\" type=\"%s\" "
+                "vehicle=\"%s\" config=\"%s\" transmission=\"%s\"",
+                request.game.c_str(),
+                request.vehicleType.c_str(),
+                request.vehicle.c_str(),
+                request.configuration.c_str(),
+                request.transmission.c_str());
+            if (request.game.empty() ||
+                request.vehicleType.empty() ||
+                request.vehicle.empty())
+            {
+                Log(
+                    "PROFILE ignored: missing required "
+                    "game/type/vehicle fields.");
+                return;
+            }
+            /*
+             * Stop the currently active preset before replacing
+             * it. This prevents the old forcefield from remaining
+             * active while the new profile is parsed.
+             */
+            ClearForceFieldPreset();
+            if (!LoadResolvedVehicleProfile(request))
+            {
+                Log(
+                    "PROFILE resolution failed.");
+                return;
+            }
+            /*
+             * Reuse the existing preset test/activation path.
+             * UpdatePresetTest() applies the loaded preset's
+             * initial forcefield.
+             *
+             * The existing position-aware preset monitor should
+             * then take over exactly as it does for GUI-loaded
+             * presets.
+             */
+            if (!EnsureFFBDeviceReady())
+            {
+                Log(
+                    "PROFILE loaded but FFB device is unavailable.");
+                return;
+            }
+            UpdatePresetTest();
+            Log(
+                "PROFILE applied successfully.");
+            return;
+        }
         if (operation == "STOP")
         {
             Log("RX: STOP");

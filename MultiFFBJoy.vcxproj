@@ -87,6 +87,7 @@
     <ClCompile Include="src\gui.cpp" />
     <ClCompile Include="src\udp.cpp" />
     <ClCompile Include="src\preset.cpp" />
+    <ClCompile Include="src\configuration.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />
