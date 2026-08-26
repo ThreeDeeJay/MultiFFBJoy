@@ -477,22 +477,6 @@ bool LoadForceFieldPreset(
     }
     return true;
 }
-void ClearForceFieldPreset()
-{
-    StopPresetTestMonitor();
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        g_loadedPreset =
-        FFBPreset{};
-        g_presetTestState =
-        PresetTestState{};
-    }
-    StopSpring();
-    StopTestConstantForce();
-    Log(
-        "Forcefield preset cleared.");
-}
 bool IsForceFieldPresetLoaded()
 {
     std::lock_guard<std::mutex> lock(
@@ -759,6 +743,22 @@ void StopPresetTestMonitor()
     {
         g_presetTestThread.join();
     }
+}
+void ClearForceFieldPreset()
+{
+    StopPresetTestMonitor();
+    {
+        std::lock_guard<std::mutex> lock(
+            g_presetMutex);
+        g_loadedPreset =
+        FFBPreset{};
+        g_presetTestState =
+        PresetTestState{};
+    }
+    StopSpring();
+    StopTestConstantForce();
+    Log(
+        "Forcefield preset cleared.");
 }
 void StartPresetTest()
 {
