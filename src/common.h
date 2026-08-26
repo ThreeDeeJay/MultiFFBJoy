@@ -199,10 +199,12 @@ template <typename... Args>
     void UpdatePresetTest();
     void StartPresetTest();
     void StopPresetTest();
-    void StartPresetTestMonitor();
-    void StopPresetTestMonitor();
     bool SetSpringForceField(
         const ForceField& forceField);
+    bool LoadHardCodedPRNDReference();
+    bool ApplyHardCodedPRNDZone(int zoneIndex);
+    void StartHardCodedPRNDTest();
+    void StopHardCodedPRNDTest();
 // Returns the active forcefield for a position expressed in
 // FFShifter coordinates (-10000..10000).
     int FindForceFieldAtPosition(

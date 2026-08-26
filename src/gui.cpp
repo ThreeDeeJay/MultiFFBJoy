@@ -280,10 +280,10 @@ namespace MultiFFBJoy
                     L"BUTTON",
                     L"PRND Test",
                     WS_CHILD | WS_VISIBLE,
-                    410,
+                    500,
                     135,
                     100,
-                    32,
+                    28,
                     window,
                     MakeControlId(IDC_PRND_TEST),
                     GetModuleHandleW(nullptr),
@@ -292,10 +292,10 @@ namespace MultiFFBJoy
                     L"BUTTON",
                     L"PRND Park",
                     WS_CHILD | WS_VISIBLE,
-                    520,
+                    610,
                     135,
                     100,
-                    32,
+                    28,
                     window,
                     MakeControlId(IDC_PRND_PARK),
                     GetModuleHandleW(nullptr),
@@ -304,10 +304,10 @@ namespace MultiFFBJoy
                     L"BUTTON",
                     L"PRND Reverse",
                     WS_CHILD | WS_VISIBLE,
-                    630,
-                    135,
+                    500,
+                    170,
                     100,
-                    32,
+                    28,
                     window,
                     MakeControlId(IDC_PRND_REVERSE),
                     GetModuleHandleW(nullptr),
@@ -316,10 +316,10 @@ namespace MultiFFBJoy
                     L"BUTTON",
                     L"PRND Neutral",
                     WS_CHILD | WS_VISIBLE,
-                    410,
-                    175,
+                    610,
+                    170,
                     100,
-                    32,
+                    28,
                     window,
                     MakeControlId(IDC_PRND_NEUTRAL),
                     GetModuleHandleW(nullptr),
@@ -328,10 +328,10 @@ namespace MultiFFBJoy
                     L"BUTTON",
                     L"PRND Drive",
                     WS_CHILD | WS_VISIBLE,
-                    520,
-                    175,
+                    500,
+                    205,
                     100,
-                    32,
+                    28,
                     window,
                     MakeControlId(IDC_PRND_DRIVE),
                     GetModuleHandleW(nullptr),
@@ -360,8 +360,8 @@ namespace MultiFFBJoy
                     WS_CHILD |
                     WS_VISIBLE |
                     BS_PUSHBUTTON,
-                    630,
-                    175,
+                    410,
+                    135,
                     80,
                     28,
                     window,
@@ -442,29 +442,34 @@ namespace MultiFFBJoy
                     return 0;
                 case IDC_PRND_TEST:
                     {
-                        Log("GUI: hard-coded PRND Test.");
-                        if (LoadHardCodedPRNDReference())
-                        {
-                            StartPresetTest();
-                        }
+                        Log("GUI: hard-coded PRND test.");
+                        StartHardCodedPRNDTest();
                         return 0;
                     }
                 case IDC_PRND_PARK:
-                    Log("GUI: hard-coded PRND Park.");
-                    ApplyHardCodedPRNDZone(0);
-                    return 0;
+                    {
+                        Log("GUI: hard-coded PRND Park.");
+                        ApplyHardCodedPRNDZone(0);
+                        return 0;
+                    }
                 case IDC_PRND_REVERSE:
-                    Log("GUI: hard-coded PRND Reverse.");
-                    ApplyHardCodedPRNDZone(1);
-                    return 0;
+                    {
+                        Log("GUI: hard-coded PRND Reverse.");
+                        ApplyHardCodedPRNDZone(1);
+                        return 0;
+                    }
                 case IDC_PRND_NEUTRAL:
-                    Log("GUI: hard-coded PRND Neutral.");
-                    ApplyHardCodedPRNDZone(2);
-                    return 0;
+                    {
+                        Log("GUI: hard-coded PRND Neutral.");
+                        ApplyHardCodedPRNDZone(2);
+                        return 0;
+                    }
                 case IDC_PRND_DRIVE:
-                    Log("GUI: hard-coded PRND Drive.");
-                    ApplyHardCodedPRNDZone(3);
-                    return 0;
+                    {
+                        Log("GUI: hard-coded PRND Drive.");
+                        ApplyHardCodedPRNDZone(3);
+                        return 0;
+                    }
                 case IDC_PRESET_LOAD:
                     {
                         HWND list =
@@ -600,7 +605,7 @@ namespace MultiFFBJoy
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             760,
-            560,
+            600,
             nullptr,
             nullptr,
             instance,

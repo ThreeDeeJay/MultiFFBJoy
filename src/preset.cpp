@@ -479,9 +479,6 @@ bool LoadForceFieldPreset(
 }
 void ClearForceFieldPreset()
 {
-    // Stop the monitor before changing the shared preset/effect state.
-    // Otherwise the monitor can race the clear operation and emit a
-    // second "zone tracking stopped" / re-apply an effect.
     StopPresetTestMonitor();
     {
         std::lock_guard<std::mutex> lock(
@@ -492,6 +489,7 @@ void ClearForceFieldPreset()
         PresetTestState{};
     }
     StopSpring();
+    StopTestConstantForce();
     Log(
         "Forcefield preset cleared.");
 }
@@ -546,6 +544,99 @@ EnumerateForceFieldPresets()
         result.begin(),
         result.end());
     return result;
+}
+namespace
+{
+    FFBPreset BuildHardCodedPRNDPreset()
+    {
+        FFBPreset preset;
+        preset.fileVersion = "hard-coded-reference";
+        auto makeField = [](const char* name,
+                            LONG centerY,
+                            LONG powerX,
+                            LONG powerY)
+        {
+            ForceField field;
+            field.name = name;
+            field.type = 1;
+            field.shapeType = 1;
+            field.centerX = 0;
+            field.centerY = centerY;
+            field.centerZ = 0;
+            field.forceType = 1;
+            field.powerX = powerX;
+            field.powerY = powerY;
+            return field;
+        };
+        // Logical FFShifter order is top -> bottom:
+        // Park, Reverse, Neutral, Drive.
+        //
+        // Park/Drive deliberately retain the profile's full spring
+        // strength but use the physical travel edge as their equilibrium.
+        // SetSpringForceField() performs the FFB2 condition-axis mapping.
+        preset.forceFields.push_back(
+            makeField("Park", -8500, -10000, 10000));
+        preset.forceFields.push_back(
+            makeField("Reverse", -3500, 10000, 10000));
+        preset.forceFields.push_back(
+            makeField("Neutral", 3500, 10000, 10000));
+        preset.forceFields.push_back(
+            makeField("Drive", 8500, -10000, 10000));
+        return preset;
+    }
+}
+bool LoadHardCodedPRNDReference()
+{
+    StopPresetTest();
+    FFBPreset preset = BuildHardCodedPRNDPreset();
+    {
+        std::lock_guard<std::mutex> lock(g_presetMutex);
+        g_loadedPreset = std::move(preset);
+    }
+    Log("Loaded hard-coded PRND reference (equivalent straight PRND profile).");
+    LogZoneSummary(g_loadedPreset);
+    return true;
+}
+bool ApplyHardCodedPRNDZone(int zoneIndex)
+{
+    if (zoneIndex < 0 || zoneIndex >= 4)
+    {
+        Logf("Invalid hard-coded PRND zone index: %d.", zoneIndex);
+        return false;
+    }
+    if (!EnsureFFBDeviceReady())
+    {
+        Log("Hard-coded PRND test ignored: FFB device unavailable.");
+        return false;
+    }
+    StopPresetTest();
+    if (!LoadHardCodedPRNDReference())
+    {
+        return false;
+    }
+    ForceField field;
+    {
+        std::lock_guard<std::mutex> lock(g_presetMutex);
+        if (static_cast<size_t>(zoneIndex) >= g_loadedPreset.forceFields.size())
+            return false;
+        field = g_loadedPreset.forceFields[static_cast<size_t>(zoneIndex)];
+    }
+    Logf(
+        "Hard-coded PRND zone: %s (index=%d).",
+        field.name.c_str(),
+        zoneIndex);
+    return SetSpringForceField(field);
+}
+void StartHardCodedPRNDTest()
+{
+    if (!LoadHardCodedPRNDReference())
+        return;
+    Log("Starting hard-coded PRND position-aware test.");
+    StartPresetTest();
+}
+void StopHardCodedPRNDTest()
+{
+    StopPresetTest();
 }
 void UpdatePresetTest()
 {
@@ -628,11 +719,10 @@ void UpdatePresetTest()
 /*
 * THIS is the important call that was missing.
 *
-* Apply the selected field using the FFB2-specific mapping.
-* Reverse/Neutral are spring detents; edge zones such as Park/Drive
-* use constant force so the stick is pulled all the way to the edge.
+* The selected field is a spring forcefield, so send
+* its center and coefficients to DirectInput.
 */
-    if (SetForceField(selectedField))
+    if (SetSpringForceField(selectedField))
     {
         Logf(
             "Applied spring forcefield \"%s\": "
@@ -693,7 +783,7 @@ void StartPresetTest()
         g_presetTestState.normalizedY = 0.0f;
     }
     Log(
-        "Preset test enabled: forcefield zones "
+        "Preset test enabled: spring forcefield zones "
         "are now position-aware.");
     Log(
         "Preset zone tracking started.");
@@ -768,131 +858,6 @@ int FindForceFieldAtPosition(
         }
     }
     return -1;
-}
-bool LoadHardCodedPRNDReference()
-{
-    StopPresetTestMonitor();
-    FFBPreset preset;
-    preset.path = std::filesystem::path("<hard-coded PRND>");
-    auto makeRectangle =
-        [](LONG minY, LONG maxY)
-        {
-            std::vector<ForceFieldVertex> vertices(4);
-            vertices[0].x = -10000;
-            vertices[0].y = minY;
-            vertices[1].x = 10000;
-            vertices[1].y = minY;
-            vertices[2].x = 10000;
-            vertices[2].y = maxY;
-            vertices[3].x = -10000;
-            vertices[3].y = maxY;
-            return vertices;
-        };
-    // Logical/visual order is top -> bottom:
-    //
-    //   Park
-    //   Reverse
-    //   Neutral
-    //   Drive
-    //
-    // The centers and force powers are taken directly from the
-    // straight PRND profile values already observed in the .fff.
-    ForceField park;
-    park.name = "Park";
-    park.type = 1;
-    park.shapeType = 1;
-    park.centerX = 0;
-    park.centerY = -8500;
-    park.forceType = 1;
-    park.powerX = -10000;
-    park.powerY = 10000;
-    park.vertices = makeRectangle(-10000, -6000);
-    ForceField reverse;
-    reverse.name = "Reverse";
-    reverse.type = 1;
-    reverse.shapeType = 1;
-    reverse.centerX = 0;
-    reverse.centerY = -3500;
-    reverse.forceType = 1;
-    reverse.powerX = 10000;
-    reverse.powerY = 10000;
-    reverse.vertices = makeRectangle(-6000, 0);
-    ForceField neutral;
-    neutral.name = "Neutral";
-    neutral.type = 1;
-    neutral.shapeType = 1;
-    neutral.centerX = 0;
-    neutral.centerY = 3500;
-    neutral.forceType = 1;
-    neutral.powerX = 10000;
-    neutral.powerY = 10000;
-    neutral.vertices = makeRectangle(0, 6000);
-    ForceField drive;
-    drive.name = "Drive";
-    drive.type = 1;
-    drive.shapeType = 1;
-    drive.centerX = 0;
-    drive.centerY = 8500;
-    drive.forceType = 1;
-    drive.powerX = -10000;
-    drive.powerY = 10000;
-    drive.vertices = makeRectangle(6000, 10000);
-    preset.forceFields =
-    {
-        park,
-        reverse,
-        neutral,
-        drive
-    };
-    Log(
-        "Loaded hard-coded PRND reference "
-        "(equivalent straight PRND profile).");
-    LogZoneSummary(preset);
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        g_loadedPreset = std::move(preset);
-        g_presetTestState = PresetTestState{};
-    }
-    return true;
-}
-bool ApplyHardCodedPRNDZone(
-    int zoneIndex)
-{
-    if (zoneIndex < 0 || zoneIndex > 3)
-    {
-        Log("Invalid hard-coded PRND zone.");
-        return false;
-    }
-    if (!EnsureFFBDeviceReady())
-    {
-        Log("Hard-coded PRND test ignored: FFB device unavailable.");
-        return false;
-    }
-    if (!LoadHardCodedPRNDReference())
-        return false;
-    ForceField selected;
-    {
-        std::lock_guard<std::mutex> lock(
-            g_presetMutex);
-        selected =
-            g_loadedPreset.forceFields[
-                static_cast<size_t>(zoneIndex)];
-        g_presetTestState =
-            PresetTestState{};
-    }
-    Logf(
-        "Hard-coded PRND zone: %s (index=%d).",
-        selected.name.c_str(),
-        zoneIndex);
-    if (!SetForceField(selected))
-    {
-        Logf(
-            "Failed to apply hard-coded PRND zone: %s.",
-            selected.name.c_str());
-        return false;
-    }
-    return true;
 }
 void StopPresetTest()
 {

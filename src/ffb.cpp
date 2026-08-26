@@ -186,9 +186,6 @@ namespace MultiFFBJoy
                     static_cast<unsigned long>(hr));
             }
         }
-        // A PRND edge zone uses the constant-force effect instead of
-        // the spring effect. STOP must therefore silence both effects.
-        StopTestConstantForce();
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_state.springStrength = 0.0f;
@@ -294,40 +291,59 @@ namespace MultiFFBJoy
         const ForceField& forceField)
     {
         Logf(
-            "SetSpringForceField ENTER: \"%s\" logical equilibrium=(%ld,%ld) power=(%ld,%ld)",
+            "SetSpringForceField ENTER: \"%s\" center=(%ld,%ld) power=(%ld,%ld)",
             forceField.name.c_str(),
             forceField.centerX,
             forceField.centerY,
             forceField.powerX,
             forceField.powerY);
-        if (g_ffbDevice == nullptr || g_springEffect == nullptr)
+        if (g_ffbDevice == nullptr)
         {
-            Log("SetSpringForceField: FFB device/effect unavailable.");
+            Log("SetSpringForceField: FFB device unavailable.");
             return false;
         }
-        // Spring and constant-force effects are mutually exclusive for
-        // the PRND reference.  Make sure a previous edge force is gone.
-        StopTestConstantForce();
-        // IMPORTANT for the SideWinder FFB2:
-        // DirectInput's condition slots are not the same thing as the
-        // logical X/Y ordering used by our FFShifter coordinates.
+        if (g_springEffect == nullptr)
+        {
+            Log("SetSpringForceField: Spring effect unavailable.");
+            return false;
+        }
+        DWORD axes[2] =
+        {
+            DIJOFS_X,
+            DIJOFS_Y
+        };
+        // The FFB2 reports/accepts the logical FFShifter axes in the
+        // opposite condition-object order: condition[0] controls the
+        // logical Y axis and condition[1] controls the logical X axis.
         //
-        // The FFB2 was experimentally found to interpret:
-        //   condition[0] = logical Y
-        //   condition[1] = logical X
-        //
-        // This is why the earlier implementation produced horizontal
-        // force when the logical Y offset was placed in condition[1].
-        const LONG offsetY =
-            std::clamp<LONG>(
-                forceField.centerY,
-                -DI_FFNOMINALMAX,
-                DI_FFNOMINALMAX);
-        const LONG offsetX =
+        // Park and Drive are edge detents in the FFShifter PRND profile.
+        // They are still springs, not constant forces: their Y equilibrium
+        // is placed at the physical travel limit while X remains centered.
+        // This gives us a hard pull toward the top/bottom edge while still
+        // returning the stick toward the horizontal center when moved left
+        // or right.
+        LONG logicalCenterX =
             std::clamp<LONG>(
                 forceField.centerX,
                 -DI_FFNOMINALMAX,
                 DI_FFNOMINALMAX);
+        LONG logicalCenterY =
+            std::clamp<LONG>(
+                forceField.centerY,
+                -DI_FFNOMINALMAX,
+                DI_FFNOMINALMAX);
+        // The straight PRND FFShifter profile uses Park/Drive as edge
+        // positions rather than ordinary interior spring equilibria.
+        if (_stricmp(forceField.name.c_str(), "Park") == 0)
+        {
+            logicalCenterX = 0;
+            logicalCenterY = FFB_COORD_MIN;
+        }
+        else if (_stricmp(forceField.name.c_str(), "Drive") == 0)
+        {
+            logicalCenterX = 0;
+            logicalCenterY = FFB_COORD_MAX;
+        }
         const LONG coefficientX =
             std::clamp<LONG>(
                 std::abs(forceField.powerX),
@@ -338,47 +354,30 @@ namespace MultiFFBJoy
                 std::abs(forceField.powerY),
                 0,
                 DI_FFNOMINALMAX);
+        Logf(
+            "Spring mapping \"%s\": logical equilibrium=(%ld,%ld), "
+            "FFB2 condition[0]=logical Y condition[1]=logical X; "
+            "coeff=(%ld,%ld)",
+            forceField.name.c_str(),
+            logicalCenterX,
+            logicalCenterY,
+            coefficientX,
+            coefficientY);
         DICONDITION conditions[2]{};
-        // FFB2 condition[0] is logical Y.
-        conditions[0].lOffset = offsetY;
+        // condition[0] is the physical Y condition.
+        conditions[0].lOffset = logicalCenterY;
         conditions[0].lPositiveCoefficient = coefficientY;
         conditions[0].lNegativeCoefficient = coefficientY;
         conditions[0].dwPositiveSaturation = DI_FFNOMINALMAX;
         conditions[0].dwNegativeSaturation = DI_FFNOMINALMAX;
         conditions[0].lDeadBand = 0;
-        // FFB2 condition[1] is logical X.
-        conditions[1].lOffset = offsetX;
+        // condition[1] is the physical X condition.
+        conditions[1].lOffset = logicalCenterX;
         conditions[1].lPositiveCoefficient = coefficientX;
         conditions[1].lNegativeCoefficient = coefficientX;
         conditions[1].dwPositiveSaturation = DI_FFNOMINALMAX;
         conditions[1].dwNegativeSaturation = DI_FFNOMINALMAX;
         conditions[1].lDeadBand = 0;
-        Logf(
-            "Spring mapping \"%s\": FFB2 condition[0]=logical Y, "
-            "condition[1]=logical X; coeff=(%ld,%ld)",
-            forceField.name.c_str(),
-            coefficientX,
-            coefficientY);
-        Logf(
-            "  condition[0]: offset=%ld +coeff=%ld -coeff=%ld",
-            conditions[0].lOffset,
-            conditions[0].lPositiveCoefficient,
-            conditions[0].lNegativeCoefficient);
-        Logf(
-            "  condition[1]: offset=%ld +coeff=%ld -coeff=%ld",
-            conditions[1].lOffset,
-            conditions[1].lPositiveCoefficient,
-            conditions[1].lNegativeCoefficient);
-        DWORD axes[2] =
-        {
-            DIJOFS_X,
-            DIJOFS_Y
-        };
-        LONG directions[2] =
-        {
-            1,
-            0
-        };
         DIEFFECT effect{};
         effect.dwSize = sizeof(DIEFFECT);
         effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
@@ -389,14 +388,20 @@ namespace MultiFFBJoy
         effect.dwTriggerRepeatInterval = 0;
         effect.cAxes = 2;
         effect.rgdwAxes = axes;
+        LONG directions[2] =
+        {
+            1,
+            0
+        };
         effect.rglDirection = directions;
         effect.lpEnvelope = nullptr;
         effect.cbTypeSpecificParams = sizeof(conditions);
         effect.lpvTypeSpecificParams = conditions;
         HRESULT hr =
-            g_springEffect->SetParameters(
-                &effect,
-                DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION);
+        g_springEffect->SetParameters(
+            &effect,
+            DIEP_TYPESPECIFICPARAMS |
+            DIEP_DIRECTION);
         Logf(
             "SetSpringForceField SetParameters: HRESULT=0x%08lX",
             static_cast<unsigned long>(hr));
@@ -421,50 +426,6 @@ namespace MultiFFBJoy
             return false;
         }
         return true;
-    }
-    bool SetForceField(
-        const ForceField& forceField)
-    {
-        // The straight PRND profile has two fundamentally different
-        // kinds of detent:
-        //
-        //   Reverse / Neutral -> spring detents at their centers.
-        //   Park / Drive      -> hard directional pull toward the edge.
-        //
-        // In the FFB2, a spring whose equilibrium is at -8500/+8500
-        // naturally becomes weaker as the stick approaches that point.
-        // That is exactly why Park/Drive stopped short of the edge.
-        //
-        // For an edge zone we therefore use a full-strength constant
-        // force.  It continues pulling after the stick reaches the edge,
-        // reproducing the "held against the gate" behavior we want.
-        const bool edgeUp =
-            forceField.centerY <= -7500;
-        const bool edgeDown =
-            forceField.centerY >= 7500;
-        if (edgeUp || edgeDown)
-        {
-            const LONG yForce =
-                edgeUp
-                    ? DI_FFNOMINALMAX
-                    : -DI_FFNOMINALMAX;
-            Logf(
-                "PRND edge mapping \"%s\": CONSTANT FORCE Y=%ld "
-                "(centerY=%ld).",
-                forceField.name.c_str(),
-                yForce,
-                forceField.centerY);
-            StopSpring();
-            if (!SetTestConstantForce(0, yForce))
-            {
-                Logf(
-                    "Failed to apply edge constant force for \"%s\".",
-                    forceField.name.c_str());
-                return false;
-            }
-            return true;
-        }
-        return SetSpringForceField(forceField);
     }
     bool SetTestConstantForce(LONG x, LONG y)
     {
