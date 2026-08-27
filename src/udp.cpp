@@ -14,86 +14,69 @@ namespace MultiFFBJoy
         }
         if (operation == "PROFILE")
         {
-            VehicleProfileRequest request;
-            std::string field;
-            while (stream >> field)
+            std::string presetName;
+            if (!(stream >> presetName))
             {
-                const size_t equals =
-                field.find('=');
-                if (equals == std::string::npos)
-                    continue;
-                const std::string key =
-                field.substr(0, equals);
-                const std::string value =
-                field.substr(equals + 1);
-                if (key == "game")
-                {
-                    request.game = value;
-                }
-                else if (key == "type")
-                {
-                    request.vehicleType = value;
-                }
-                else if (key == "vehicle")
-                {
-                    request.vehicle = value;
-                }
-                else if (key == "config")
-                {
-                    request.configuration = value;
-                }
-                else if (key == "transmission")
-                {
-                    request.transmission = value;
-                }
+                Log("RX: malformed PROFILE command.");
+                return;
             }
+            if (presetName.empty())
+            {
+                Log("RX: PROFILE requires a preset name.");
+                return;
+            }
+/*
+* Accept both:
+*
+*   PROFILE PRND
+*   PROFILE PRND.fff
+*/
+            if (presetName.size() < 4 ||
+                presetName.substr(
+                    presetName.size() - 4) != ".fff")
+            {
+                presetName += ".fff";
+            }
+            const std::filesystem::path path =
+            std::filesystem::current_path()
+            / "forcefields"
+            / presetName;
             Logf(
-                "RX: PROFILE game=\"%s\" type=\"%s\" "
-                "vehicle=\"%s\" config=\"%s\" transmission=\"%s\"",
-                request.game.c_str(),
-                request.vehicleType.c_str(),
-                request.vehicle.c_str(),
-                request.configuration.c_str(),
-                request.transmission.c_str());
-            if (request.game.empty() ||
-                request.vehicleType.empty() ||
-                request.vehicle.empty())
+                "RX: PROFILE %s",
+                presetName.c_str());
+            if (!std::filesystem::exists(path))
             {
-                Log(
-                    "PROFILE ignored: missing required "
-                    "game/type/vehicle fields.");
+                Logf(
+                    "PROFILE failed: preset does not exist: %s",
+                    path.string().c_str());
                 return;
             }
-            /*
-             * Stop the currently active preset before replacing
-             * it. This prevents the old forcefield from remaining
-             * active while the new profile is parsed.
-             */
+/*
+* Stop the previous profile first.
+*
+* This is important when switching from one vehicle to
+* another because the old vehicle's spring must never
+* remain active while the new profile is being loaded.
+*/
             ClearForceFieldPreset();
-            if (!LoadResolvedVehicleProfile(request))
+            if (!LoadForceFieldPreset(path))
             {
-                Log(
-                    "PROFILE resolution failed.");
+                Logf(
+                    "PROFILE failed to load: %s",
+                    path.string().c_str());
                 return;
             }
-            /*
-             * Reuse the existing preset test/activation path.
-             * UpdatePresetTest() applies the loaded preset's
-             * initial forcefield.
-             *
-             * The existing position-aware preset monitor should
-             * then take over exactly as it does for GUI-loaded
-             * presets.
-             */
-            if (!EnsureFFBDeviceReady())
-            {
-                Log(
-                    "PROFILE loaded but FFB device is unavailable.");
-                return;
-            }
+/*
+* UpdatePresetTest() is the existing entry point used by
+* the GUI to activate the loaded forcefield profile.
+*
+* In the current position-aware implementation this starts
+* the preset zone tracking/monitoring behavior.
+*/
             UpdatePresetTest();
-            Log(
-                "PROFILE applied successfully.");
+            Logf(
+                "PROFILE activated: %s",
+                path.string().c_str());
             return;
         }
         if (operation == "STOP")
