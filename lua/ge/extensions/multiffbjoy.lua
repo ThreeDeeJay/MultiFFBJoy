@@ -74,60 +74,376 @@ local function initializeUDP()
   return true
 end
 --[[
-  Get the current player vehicle directly from BeamNG's game object.
-  core_vehicle_manager.getPlayerVehicleID() was returning nil during
-  extension startup, so use be:getPlayerVehicleID(0) instead.
-  Vehicle 0 is the first player seat.
-  ]]
-  local function getPlayerVehicleId()
-    if be == nil then
-      return nil
-    end
-    local ok, result = pcall(function()
-      return be:getPlayerVehicleID(0)
+Known-good player vehicle lookup.
+]]
+local function getPlayerVehicleId()
+  if be == nil then
+    return nil
+  end
+  local ok, result = pcall(function()
+    return be:getPlayerVehicleID(0)
+  end)
+  if not ok then
+    log(
+      "getPlayerVehicleID failed: "
+      .. tostring(result)
+      )
+    return nil
+  end
+  if result == nil or result == 0 then
+    return nil
+  end
+  return result
+end
+--[[
+Try the cached/current player vehicle API first.
+]]
+local function getPlayerVehicleObject(vehicleId)
+  local vehicle = nil
+-- Preferred modern path.
+if type(getPlayerVehicle) == "function" then
+  local ok, result = pcall(function()
+    return getPlayerVehicle(0)
+  end)
+  if ok and result ~= nil then
+    vehicle = result
+    log("getPlayerVehicle(0) succeeded.")
+  else
+    log(
+      "getPlayerVehicle(0) unavailable/failed: "
+      .. tostring(result)
+      )
+  end
+end
+-- Fallback to the known-good object lookup.
+if vehicle == nil and be ~= nil then
+  local ok, result = pcall(function()
+    return be:getObjectByID(vehicleId)
+  end)
+  if ok and result ~= nil then
+    vehicle = result
+    log("be:getObjectByID() succeeded.")
+  else
+    log(
+      "be:getObjectByID() failed: "
+      .. tostring(result)
+      )
+  end
+end
+return vehicle
+end
+local function printField(vehicle, fieldName)
+  if vehicle == nil then
+    return
+  end
+  if type(vehicle.getField) ~= "function" then
+    log(
+      "getField() not available for "
+      .. tostring(fieldName)
+      )
+    return
+  end
+  local ok, value = pcall(function()
+    return vehicle:getField(fieldName, "")
+  end)
+  if not ok then
+    log(
+      "getField("
+      .. tostring(fieldName)
+      .. ") ERROR: "
+      .. tostring(value)
+      )
+    return
+  end
+  log(
+    "getField("
+    .. tostring(fieldName)
+    .. ") = "
+    .. tostring(value)
+    )
+end
+local function printDirectField(vehicle, fieldName)
+  if vehicle == nil then
+    return
+  end
+  local ok, value = pcall(function()
+    return vehicle[fieldName]
+  end)
+  if not ok then
+    log(
+      "vehicle."
+      .. tostring(fieldName)
+      .. " ERROR: "
+      .. tostring(value)
+      )
+    return
+  end
+  log(
+    "vehicle."
+    .. tostring(fieldName)
+    .. " = "
+    .. tostring(value)
+    )
+end
+local function tryJBeamFilename(vehicle)
+  if vehicle == nil then
+    return
+  end
+  if type(vehicle.getJBeamFilename) ~= "function" then
+    log("getJBeamFilename() not available.")
+    return
+  end
+  local ok, value = pcall(function()
+    return vehicle:getJBeamFilename()
+  end)
+  if not ok then
+    log(
+      "getJBeamFilename() ERROR: "
+      .. tostring(value)
+      )
+    return
+  end
+  log(
+    "getJBeamFilename() = "
+    .. tostring(value)
+    )
+end
+local function splitPartConfig(partConfig)
+  if partConfig == nil then
+    return nil, nil
+  end
+  partConfig = tostring(partConfig)
+  if partConfig == "" then
+    return nil, nil
+  end
+-- Normalize slashes.
+partConfig = partConfig:gsub("\\", "/")
+-- Remove trailing slash if any.
+partConfig = partConfig:gsub("/+$", "")
+-- Expected:
+--
+-- vehicles/miramar/luxe_A.pc
+--
+local vehicleName, configName =
+partConfig:match(
+  "^vehicles/([^/]+)/([^/]+)%.pc$"
+  )
+if vehicleName ~= nil then
+  return vehicleName, configName
+end
+-- More permissive fallback in case the path has
+-- additional prefixes.
+vehicleName, configName =
+partConfig:match(
+  ".*/vehicles/([^/]+)/([^/]+)%.pc$"
+  )
+return vehicleName, configName
+end
+local function dumpVehicleMetadata(vehicleId)
+  log("========================================")
+  log("VEHICLE METADATA DIAGNOSTIC")
+  log("========================================")
+  log(
+    "Vehicle ID = "
+    .. tostring(vehicleId)
+    )
+  local vehicle =
+  getPlayerVehicleObject(vehicleId)
+  if vehicle == nil then
+    log("ERROR: Could not obtain player vehicle object.")
+    log("========================================")
+    return
+  end
+  log(
+    "Vehicle object = "
+    .. tostring(vehicle)
+    )
+  log("")
+  log("DIRECT VEHICLE FIELDS")
+  log("---------------------")
+  local directFields = {
+    "JBeam",
+    "jBeam",
+    "partConfig",
+    "config",
+    "configName",
+    "configuration",
+    "configurationName",
+    "model",
+    "modelName",
+    "vehicleName",
+    "vehicleType",
+    "type",
+    "category",
+    "name"
+  }
+  for _, fieldName in ipairs(directFields) do
+    printDirectField(
+      vehicle,
+      fieldName
+      )
+  end
+  log("")
+  log("getField() VALUES")
+  log("-----------------")
+  local getFieldNames = {
+    "JBeam",
+    "jBeam",
+    "partConfig",
+    "config",
+    "configName",
+    "configuration",
+    "configurationName",
+    "model",
+    "modelName",
+    "vehicleName",
+    "vehicleType",
+    "type",
+    "category",
+    "name"
+  }
+  for _, fieldName in ipairs(getFieldNames) do
+    printField(
+      vehicle,
+      fieldName
+      )
+  end
+  log("")
+  log("METHODS")
+  log("-------")
+  tryJBeamFilename(vehicle)
+  log("")
+  log("PART CONFIG PARSING")
+  log("-------------------")
+  local ok, partConfig =
+  pcall(function()
+    return vehicle:getField(
+      "partConfig",
+      ""
+      )
+  end)
+  if ok then
+    log(
+      "partConfig raw = "
+      .. tostring(partConfig)
+      )
+    local vehicleName, configName =
+    splitPartConfig(partConfig)
+    log(
+      "Parsed vehicle codename = "
+      .. tostring(vehicleName)
+      )
+    log(
+      "Parsed configuration codename = "
+      .. tostring(configName)
+      )
+  else
+    log(
+      "Could not read partConfig: "
+      .. tostring(partConfig)
+      )
+  end
+  log("")
+  log("OBJECT ID")
+  log("---------")
+  if type(vehicle.getID) == "function" then
+    local idOK, objectId =
+    pcall(function()
+      return vehicle:getID()
     end)
-    if not ok then
+    if idOK then
       log(
-        "getPlayerVehicleID failed: "
-        .. tostring(result)
+        "vehicle:getID() = "
+        .. tostring(objectId)
         )
-      return nil
+    else
+      log(
+        "vehicle:getID() failed: "
+        .. tostring(objectId)
+        )
     end
-    if result == nil or result == 0 then
-      return nil
-    end
-    return result
+  else
+    log("vehicle:getID() not available.")
   end
-  local function handleVehicleChange(vehicleId)
+  log("")
+  log("AVAILABLE OBJECT KEYS")
+  log("---------------------")
+-- userdata cannot normally be iterated with pairs(),
+-- but attempt it safely in case the object exposes keys.
+local pairsOK, pairsError =
+pcall(function()
+  local count = 0
+  for key, value in pairs(vehicle) do
     log(
-      "Player vehicle changed: "
-      .. tostring(currentVehicleId)
-      .. " -> "
-      .. tostring(vehicleId)
+      "  "
+      .. tostring(key)
+      .. " = "
+      .. tostring(value)
       )
-    currentVehicleId = vehicleId
-    if vehicleId == nil or vehicleId == 0 then
-      log("No active player vehicle.")
-      return
-    end
-    describeVehicle(vehicleId)
+    count = count + 1
+-- Avoid flooding the console if the object exposes
+-- a huge number of fields.
+if count >= 100 then
+  log("  ... truncated after 100 keys")
+  break
+end
+end
+if count == 0 then
+  log("  <no enumerable keys>")
+end
+end)
+if not pairsOK then
+  log(
+    "pairs(vehicle) unavailable: "
+    .. tostring(pairsError)
+    )
+end
+log("========================================")
+log("END VEHICLE METADATA DIAGNOSTIC")
+log("========================================")
+end
+local function handleVehicleChange(vehicleId)
+  log(
+    "Player vehicle changed: "
+    .. tostring(currentVehicleId)
+    .. " -> "
+    .. tostring(vehicleId)
+    )
+  currentVehicleId = vehicleId
+  if vehicleId == nil or vehicleId == 0 then
+    log("No active player vehicle.")
+    return
   end
-  local function onVehicleSwitched(oldId, newId)
-    log(
-      "onVehicleSwitched: "
-      .. tostring(oldId)
-      .. " -> "
-      .. tostring(newId)
-      )
-    handleVehicleChange(newId)
+  requestReacquire()
+-- Give BeamNG a short opportunity to finish populating
+-- the vehicle object's configuration information.
+core_jobsystem.create(function(job)
+  job.sleep(0.5)
+  if not initialized then
+    return
   end
-  local function onVehicleSpawned(vehicleId)
-    log(
-      "onVehicleSpawned: "
-      .. tostring(vehicleId)
-      )
-  -- Only react if this is the current player vehicle.
-  local playerId = getPlayerVehicleId()
+  if currentVehicleId ~= vehicleId then
+    return
+  end
+  dumpVehicleMetadata(vehicleId)
+end)
+end
+local function onVehicleSwitched(oldId, newId)
+  log(
+    "onVehicleSwitched: "
+    .. tostring(oldId)
+    .. " -> "
+    .. tostring(newId)
+    )
+  handleVehicleChange(newId)
+end
+local function onVehicleSpawned(vehicleId)
+  log(
+    "onVehicleSpawned: "
+    .. tostring(vehicleId)
+    )
+  local playerId =
+  getPlayerVehicleId()
   if playerId == vehicleId then
     handleVehicleChange(vehicleId)
   end
@@ -154,14 +470,11 @@ local function onExtensionLoaded()
   initialized = true
   log("Extension initialized.")
   initializeUDP()
-  -- The extension can load before a player vehicle exists.
-  --
-  -- Poll for up to 30 seconds rather than performing one lookup
-  -- after a fixed one-second delay.
   core_jobsystem.create(function(job)
     local elapsed = 0
     while initialized and elapsed < 30 do
-      local vehicleId = getPlayerVehicleId()
+      local vehicleId =
+      getPlayerVehicleId()
       if vehicleId ~= nil then
         log(
           "Initial player vehicle detected: "
@@ -191,96 +504,6 @@ local function onExtensionUnloaded()
   end
   udp = nil
   socket = nil
-end
-local function getVehicleObject(vehicleId)
-  if vehicleId == nil or vehicleId == 0 then
-    return nil
-  end
-  local ok, object = pcall(function()
-    return be:getObjectByID(vehicleId)
-  end)
-  if not ok then
-    log(
-      "getObjectByID failed: "
-      .. tostring(object)
-      )
-    return nil
-  end
-  return object
-end
-local function readVehicleValue(
-    vehicle,
-    field,
-    fallback)
-  if vehicle == nil then
-    return fallback
-  end
-  local ok, value = pcall(function()
-    return vehicle[field]
-  end)
-  if ok and value ~= nil then
-    return value
-  end
-  return fallback
-end
-local function describeVehicle(vehicleId)
-  local vehicle =
-    getVehicleObject(vehicleId)
-  if vehicle == nil then
-    return
-  end
-  log(
-    "Vehicle object acquired: "
-    .. tostring(vehicleId))
-  local fields = {
-    "jbeam",
-    "config",
-    "configuration",
-    "vehicleType",
-    "transmission",
-    "gearboxMode",
-  }
-  for _, field in ipairs(fields) do
-    local ok, value =
-      pcall(function()
-        return vehicle[field]
-      end)
-    if ok then
-      log(
-        "Vehicle field "
-        .. field
-        .. " = "
-        .. tostring(value))
-    else
-      log(
-        "Vehicle field "
-        .. field
-        .. " unavailable.")
-    end
-  end
-  /*
-   * Electrics are particularly useful because BeamNG
-   * documents gear, gearIndex and gearboxMode.
-   */
-  local electrics =
-    vehicle.electrics
-  if electrics ~= nil then
-    local gear =
-      electrics.gear
-    local gearIndex =
-      electrics.gearIndex
-    local gearboxMode =
-      electrics.gearboxMode
-    log(
-      "Electrics: gear="
-      .. tostring(gear)
-      .. " gearIndex="
-      .. tostring(gearIndex)
-      .. " gearboxMode="
-      .. tostring(gearboxMode))
-  else
-    log("Vehicle electrics object unavailable.")
-  end
 end
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
