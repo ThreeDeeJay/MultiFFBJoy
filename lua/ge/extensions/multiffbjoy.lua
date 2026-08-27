@@ -7,6 +7,8 @@ local initialized = false
 local currentVehicleId = nil
 local lastReacquireTime = -1000
 local REACQUIRE_COOLDOWN = 1.0
+local diagnosticRequestId = 0
+local lastDiagnosticRequest = -1
 local function log(message)
   print("[MultiFFBJoy] " .. tostring(message))
 end
@@ -73,9 +75,85 @@ local function initializeUDP()
     )
   return true
 end
---[[
-Known-good player vehicle lookup.
-]]
+-- ============================================================================
+-- Utility functions
+-- ============================================================================
+local function safeToString(value)
+  local ok, result = pcall(function()
+    return tostring(value)
+  end)
+  if ok then
+    return result
+  end
+  return "<tostring failed>"
+end
+local function safeGetField(object, fieldName)
+  if object == nil then
+    return nil
+  end
+  local ok, result = pcall(function()
+    return object:getField(fieldName, "")
+  end)
+  if not ok then
+    return nil
+  end
+  if result == "" then
+    return nil
+  end
+  return result
+end
+local function extractVehicleCodename(vehicle)
+  if vehicle == nil then
+    return nil
+  end
+  local value = nil
+  local ok, result = pcall(function()
+    return vehicle.JBeam
+  end)
+  if ok and result ~= nil and result ~= "" then
+    value = result
+  end
+  if value == nil then
+    value = safeGetField(vehicle, "JBeam")
+  end
+  if value == nil then
+    local methodOK, methodResult = pcall(function()
+      return vehicle:getJBeamFilename()
+    end)
+    if methodOK and methodResult ~= nil then
+      value = methodResult
+    end
+  end
+  return value
+end
+local function extractPartConfig(vehicle)
+  if vehicle == nil then
+    return nil
+  end
+  local value = nil
+  local ok, result = pcall(function()
+    return vehicle.partConfig
+  end)
+  if ok and result ~= nil and result ~= "" then
+    value = result
+  end
+  if value == nil then
+    value = safeGetField(vehicle, "partConfig")
+  end
+  return value
+end
+local function extractConfigurationCodename(partConfig)
+  if partConfig == nil then
+    return nil
+  end
+  local normalized = tostring(partConfig)
+  normalized = normalized:gsub("\\", "/")
+  local filename = normalized:match("([^/]+)%.pc$")
+  if filename == nil then
+    return nil
+  end
+  return filename
+end
 local function getPlayerVehicleId()
   if be == nil then
     return nil
@@ -90,174 +168,45 @@ local function getPlayerVehicleId()
       )
     return nil
   end
-  if result == nil or result == 0 then
+  if result == nil or result == 0 or result == -1 then
     return nil
   end
   return result
 end
---[[
-Try the cached/current player vehicle API first.
-]]
-local function getPlayerVehicleObject(vehicleId)
-  local vehicle = nil
--- Preferred modern path.
-if type(getPlayerVehicle) == "function" then
-  local ok, result = pcall(function()
-    return getPlayerVehicle(0)
-  end)
-  if ok and result ~= nil then
-    vehicle = result
-    log("getPlayerVehicle(0) succeeded.")
-  else
-    log(
-      "getPlayerVehicle(0) unavailable/failed: "
-      .. tostring(result)
-      )
+local function getPlayerVehicle()
+  local vehicleId = getPlayerVehicleId()
+  if vehicleId == nil then
+    return nil, nil
   end
-end
--- Fallback to the known-good object lookup.
-if vehicle == nil and be ~= nil then
-  local ok, result = pcall(function()
+  if be == nil then
+    return nil, vehicleId
+  end
+  local ok, vehicle = pcall(function()
     return be:getObjectByID(vehicleId)
   end)
-  if ok and result ~= nil then
-    vehicle = result
-    log("be:getObjectByID() succeeded.")
-  else
-    log(
-      "be:getObjectByID() failed: "
-      .. tostring(result)
-      )
-  end
-end
-return vehicle
-end
-local function printField(vehicle, fieldName)
-  if vehicle == nil then
-    return
-  end
-  if type(vehicle.getField) ~= "function" then
-    log(
-      "getField() not available for "
-      .. tostring(fieldName)
-      )
-    return
-  end
-  local ok, value = pcall(function()
-    return vehicle:getField(fieldName, "")
-  end)
   if not ok then
     log(
-      "getField("
-      .. tostring(fieldName)
-      .. ") ERROR: "
-      .. tostring(value)
+      "getObjectByID failed: "
+      .. tostring(vehicle)
       )
-    return
+    return nil, vehicleId
   end
-  log(
-    "getField("
-    .. tostring(fieldName)
-    .. ") = "
-    .. tostring(value)
-    )
+  return vehicle, vehicleId
 end
-local function printDirectField(vehicle, fieldName)
-  if vehicle == nil then
-    return
-  end
-  local ok, value = pcall(function()
-    return vehicle[fieldName]
-  end)
-  if not ok then
-    log(
-      "vehicle."
-      .. tostring(fieldName)
-      .. " ERROR: "
-      .. tostring(value)
-      )
-    return
-  end
-  log(
-    "vehicle."
-    .. tostring(fieldName)
-    .. " = "
-    .. tostring(value)
-    )
-end
-local function tryJBeamFilename(vehicle)
-  if vehicle == nil then
-    return
-  end
-  if type(vehicle.getJBeamFilename) ~= "function" then
-    log("getJBeamFilename() not available.")
-    return
-  end
-  local ok, value = pcall(function()
-    return vehicle:getJBeamFilename()
-  end)
-  if not ok then
-    log(
-      "getJBeamFilename() ERROR: "
-      .. tostring(value)
-      )
-    return
-  end
-  log(
-    "getJBeamFilename() = "
-    .. tostring(value)
-    )
-end
-local function splitPartConfig(partConfig)
-  if partConfig == nil then
-    return nil, nil
-  end
-  partConfig = tostring(partConfig)
-  if partConfig == "" then
-    return nil, nil
-  end
--- Normalize slashes.
-partConfig = partConfig:gsub("\\", "/")
--- Remove trailing slash if any.
-partConfig = partConfig:gsub("/+$", "")
--- Expected:
---
--- vehicles/miramar/luxe_A.pc
---
-local vehicleName, configName =
-partConfig:match(
-  "^vehicles/([^/]+)/([^/]+)%.pc$"
-  )
-if vehicleName ~= nil then
-  return vehicleName, configName
-end
--- More permissive fallback in case the path has
--- additional prefixes.
-vehicleName, configName =
-partConfig:match(
-  ".*/vehicles/([^/]+)/([^/]+)%.pc$"
-  )
-return vehicleName, configName
-end
-local function dumpVehicleMetadata(vehicleId)
+-- ============================================================================
+-- GELUA-side vehicle metadata
+-- ============================================================================
+local function printDirectVehicleMetadata(vehicle, vehicleId)
   log("========================================")
   log("VEHICLE METADATA DIAGNOSTIC")
   log("========================================")
-  log(
-    "Vehicle ID = "
-    .. tostring(vehicleId)
-    )
-  local vehicle =
-  getPlayerVehicleObject(vehicleId)
+  log("Vehicle ID = " .. tostring(vehicleId))
   if vehicle == nil then
-    log("ERROR: Could not obtain player vehicle object.")
+    log("Vehicle object = nil")
     log("========================================")
     return
   end
-  log(
-    "Vehicle object = "
-    .. tostring(vehicle)
-    )
+  log("Vehicle object = " .. safeToString(vehicle))
   log("")
   log("DIRECT VEHICLE FIELDS")
   log("---------------------")
@@ -278,130 +227,536 @@ local function dumpVehicleMetadata(vehicleId)
     "name"
   }
   for _, fieldName in ipairs(directFields) do
-    printDirectField(
-      vehicle,
-      fieldName
-      )
+    local ok, value = pcall(function()
+      return vehicle[fieldName]
+    end)
+    if ok then
+      log(
+        "vehicle."
+        .. fieldName
+        .. " = "
+        .. safeToString(value)
+        )
+    else
+      log(
+        "vehicle."
+        .. fieldName
+        .. " = <error>"
+        )
+    end
   end
   log("")
   log("getField() VALUES")
   log("-----------------")
-  local getFieldNames = {
-    "JBeam",
-    "jBeam",
-    "partConfig",
-    "config",
-    "configName",
-    "configuration",
-    "configurationName",
-    "model",
-    "modelName",
-    "vehicleName",
-    "vehicleType",
-    "type",
-    "category",
-    "name"
-  }
-  for _, fieldName in ipairs(getFieldNames) do
-    printField(
-      vehicle,
-      fieldName
+  for _, fieldName in ipairs(directFields) do
+    local value = safeGetField(vehicle, fieldName)
+    if value == nil then
+      value = ""
+    end
+    log(
+      "getField("
+      .. fieldName
+      .. ") = "
+      .. tostring(value)
       )
   end
   log("")
   log("METHODS")
   log("-------")
-  tryJBeamFilename(vehicle)
+  local methodNames = {
+    "getJBeamFilename",
+    "getID",
+    "getName"
+  }
+  for _, methodName in ipairs(methodNames) do
+    local ok, value = pcall(function()
+      local fn = vehicle[methodName]
+      if type(fn) ~= "function" then
+        return "<not available>"
+      end
+      return fn(vehicle)
+    end)
+    if ok then
+      log(
+        methodName
+        .. "() = "
+        .. safeToString(value)
+        )
+    else
+      log(
+        methodName
+        .. "() = <error>"
+        )
+    end
+  end
+  local jbeam = extractVehicleCodename(vehicle)
+  local partConfig = extractPartConfig(vehicle)
+  local configuration = extractConfigurationCodename(partConfig)
+  log("")
+  log("IDENTITY")
+  log("--------")
+  log(
+    "Vehicle codename = "
+    .. tostring(jbeam)
+    )
+  log(
+    "Part config = "
+    .. tostring(partConfig)
+    )
+  log(
+    "Configuration codename = "
+    .. tostring(configuration)
+    )
   log("")
   log("PART CONFIG PARSING")
   log("-------------------")
-  local ok, partConfig =
-  pcall(function()
-    return vehicle:getField(
-      "partConfig",
-      ""
-      )
-  end)
-  if ok then
+  if partConfig ~= nil then
+    local normalized = tostring(partConfig):gsub("\\", "/")
+    local parsedVehicle =
+    normalized:match("vehicles/([^/]+)/")
+    local parsedConfig =
+    normalized:match("vehicles/[^/]+/([^/]+)%.pc$")
     log(
       "partConfig raw = "
       .. tostring(partConfig)
       )
-    local vehicleName, configName =
-    splitPartConfig(partConfig)
     log(
       "Parsed vehicle codename = "
-      .. tostring(vehicleName)
+      .. tostring(parsedVehicle)
       )
     log(
       "Parsed configuration codename = "
-      .. tostring(configName)
+      .. tostring(parsedConfig)
       )
   else
-    log(
-      "Could not read partConfig: "
-      .. tostring(partConfig)
-      )
+    log("partConfig unavailable.")
   end
   log("")
   log("OBJECT ID")
   log("---------")
-  if type(vehicle.getID) == "function" then
-    local idOK, objectId =
-    pcall(function()
-      return vehicle:getID()
-    end)
-    if idOK then
-      log(
-        "vehicle:getID() = "
-        .. tostring(objectId)
-        )
-    else
-      log(
-        "vehicle:getID() failed: "
-        .. tostring(objectId)
-        )
-    end
-  else
-    log("vehicle:getID() not available.")
-  end
-  log("")
-  log("AVAILABLE OBJECT KEYS")
-  log("---------------------")
--- userdata cannot normally be iterated with pairs(),
--- but attempt it safely in case the object exposes keys.
-local pairsOK, pairsError =
-pcall(function()
-  local count = 0
-  for key, value in pairs(vehicle) do
+  local ok, objectId = pcall(function()
+    return vehicle:getID()
+  end)
+  if ok then
     log(
-      "  "
-      .. tostring(key)
-      .. " = "
-      .. tostring(value)
+      "vehicle:getID() = "
+      .. tostring(objectId)
       )
-    count = count + 1
--- Avoid flooding the console if the object exposes
--- a huge number of fields.
-if count >= 100 then
-  log("  ... truncated after 100 keys")
+  else
+    log("vehicle:getID() failed.")
+  end
+  log("========================================")
+end
+-- ============================================================================
+-- VLUA diagnostic bridge
+--
+-- The GELUA vehicle object does not expose the complete vehicle-controller
+-- runtime state. BeamNG provides queueLuaCommand() specifically for sending
+-- code into the vehicle's VLUA.
+--
+-- The vehicle VM sends the diagnostic table back through a mailbox.
+-- ============================================================================
+local function queueVehicleDiagnostic(vehicle, vehicleId)
+  if vehicle == nil then
+    log("Cannot run VLUA diagnostic: vehicle is nil.")
+    return
+  end
+  diagnosticRequestId =
+  diagnosticRequestId + 1
+  local requestId = diagnosticRequestId
+  log("")
+  log("Requesting VLUA vehicle-controller diagnostic...")
+  log("Diagnostic request ID = " .. tostring(requestId))
+  local command = [[
+  local result = {
+    requestId = ]] .. tostring(requestId) .. [[,
+    vehicleId = nil,
+    jbeam = nil,
+    electrics = {},
+    gearbox = {},
+    automatic = {},
+    controller = {},
+    powertrain = {},
+    globals = {}
+  }
+  local function addValue(target, name, value)
+  local ok, text = pcall(function()
+  return tostring(value)
+  end)
+  if ok then
+  target[name] = text
+  else
+  target[name] = "<tostring failed>"
+  end
+  end
+  local function inspectTable(target, source, names)
+  if type(source) ~= "table" then
+  return
+  end
+  for _, name in ipairs(names) do
+  local ok, value = pcall(function()
+  return source[name]
+  end)
+  if ok and value ~= nil then
+  addValue(target, name, value)
+  end
+  end
+  end
+  local function shallowInspect(target, source, prefix, depth, visited)
+  if type(source) ~= "table" then
+  return
+  end
+  if depth <= 0 then
+  return
+  end
+  visited = visited or {}
+  if visited[source] then
+  return
+  end
+  visited[source] = true
+  local count = 0
+  for key, value in pairs(source) do
+  count = count + 1
+  if count > 100 then
   break
+  end
+  local keyText = tostring(key)
+  if type(value) ~= "table" then
+  addValue(
+  target,
+  prefix .. keyText,
+  value
+  )
+  end
+  end
+  end
+  -- Basic vehicle identity inside VLUA.
+  pcall(function()
+  result.vehicleId = obj:getID()
+  end)
+  pcall(function()
+  result.jbeam = obj:getJBeamFilename()
+  end)
+  -- --------------------------------------------------------------------------
+  -- Electrics
+  -- --------------------------------------------------------------------------
+  if type(electrics) == "table" then
+  if type(electrics.values) == "table" then
+  local interestingElectrics = {
+    "gear",
+    "gearIndex",
+    "gear_A",
+    "gear_M",
+    "gear_R",
+    "gear_D",
+    "automaticGear",
+    "automaticMode",
+    "automaticGearIndex",
+    "wheelspeed",
+    "airspeed",
+    "rpm",
+    "throttle",
+    "brake",
+    "clutch",
+    "steering",
+    "parkingbrake",
+    "engineRunning"
+  }
+  inspectTable(
+  result.electrics,
+  electrics.values,
+  interestingElectrics
+  )
+  end
+  end
+  -- --------------------------------------------------------------------------
+  -- Search for gearbox / transmission objects
+  -- --------------------------------------------------------------------------
+  local gearboxCandidates = {
+    "gearbox",
+    "automaticGearbox",
+    "manualGearbox",
+    "transmission",
+    "powertrain",
+    "vehicleController"
+  }
+  for _, name in ipairs(gearboxCandidates) do
+  local ok, value = pcall(function()
+  return _G[name]
+  end)
+  if ok and value ~= nil then
+  addValue(
+  result.globals,
+  name,
+  value
+  )
+  end
+  end
+  -- --------------------------------------------------------------------------
+  -- Known vehicle-controller / gearbox variables
+  -- --------------------------------------------------------------------------
+  local controllerNames = {
+    "controller",
+    "vehicleController",
+    "mainController",
+    "automaticHandling",
+    "gearboxHandling",
+    "shiftLogic",
+    "shiftLogicName"
+  }
+  for _, name in ipairs(controllerNames) do
+  local ok, value = pcall(function()
+  return _G[name]
+  end)
+  if ok and value ~= nil then
+  if type(value) == "table" then
+  shallowInspect(
+  result.controller,
+  value,
+  name .. ".",
+  2
+  )
+  else
+  addValue(
+  result.controller,
+  name,
+  value
+  )
+  end
+  end
+  end
+  -- --------------------------------------------------------------------------
+  -- Inspect likely automatic gearbox runtime variables.
+  --
+  -- The official gearbox controller documents these concepts:
+  -- automaticModes
+  -- currentGearIndex
+  -- getGearName()
+  -- getGearPosition()
+  -- etc.
+  -- --------------------------------------------------------------------------
+  local automaticCandidates = {
+    "automaticModes",
+    "availableModes",
+    "automaticHandling",
+    "currentGearIndex",
+    "currentGear",
+    "gearPosition",
+    "mode",
+    "automaticMode",
+    "defaultAutomaticMode",
+    "defaultAutomaticForwardMode",
+    "shiftLogicName"
+  }
+  for _, name in ipairs(automaticCandidates) do
+  local found = false
+  local ok, value = pcall(function()
+  return _G[name]
+  end)
+  if ok and value ~= nil then
+  addValue(
+  result.automatic,
+  name,
+  value
+  )
+  found = true
+  end
+  if not found and type(controller) == "table" then
+  local ok2, value2 = pcall(function()
+  return controller[name]
+  end)
+  if ok2 and value2 ~= nil then
+  addValue(
+  result.automatic,
+  "controller." .. name,
+  value2
+  )
+  end
+  end
+  end
+  -- --------------------------------------------------------------------------
+  -- Powertrain inspection
+  -- --------------------------------------------------------------------------
+  if type(powertrain) == "table" then
+  shallowInspect(
+  result.powertrain,
+  powertrain,
+  "powertrain.",
+  2
+  )
+  end
+  -- --------------------------------------------------------------------------
+  -- Search globals for names which look especially relevant.
+  -- --------------------------------------------------------------------------
+  local interestingGlobalWords = {
+    "gear",
+    "shift",
+    "transmission",
+    "automatic",
+    "vehicle",
+    "controller",
+    "powertrain",
+    "config",
+    "jbeam",
+    "type"
+  }
+  local globalCount = 0
+  for name, value in pairs(_G) do
+  if globalCount >= 300 then
+  break
+  end
+  local nameText = tostring(name):lower()
+  local interesting = false
+  for _, word in ipairs(interestingGlobalWords) do
+  if nameText:find(word, 1, true) then
+  interesting = true
+  break
+  end
+  end
+  if interesting then
+  globalCount = globalCount + 1
+  addValue(
+  result.globals,
+  tostring(name),
+  value
+  )
+  end
+  end
+  -- --------------------------------------------------------------------------
+  -- Send the complete result back to GELUA.
+  -- --------------------------------------------------------------------------
+  pcall(function()
+  be:sendToMailbox(
+  "multiffbjoy.vehicleDiagnostic",
+  result
+  )
+  end)
+  ]]
+  local ok, err = pcall(function()
+    vehicle:queueLuaCommand(command)
+  end)
+  if not ok then
+    log(
+      "queueLuaCommand failed: "
+      .. tostring(err)
+      )
+    return false
+  end
+  log("VLUA diagnostic queued successfully.")
+  return true
 end
+-- ============================================================================
+-- Print VLUA diagnostic result
+-- ============================================================================
+local function printDiagnosticTable(title, tableValue)
+  log("")
+  log(title)
+  log(string.rep("-", #title))
+  if type(tableValue) ~= "table" then
+    log("<not a table>")
+    return
+  end
+  local keys = {}
+  for key, _ in pairs(tableValue) do
+    table.insert(keys, tostring(key))
+  end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    local value = tableValue[key]
+    log(
+      tostring(key)
+      .. " = "
+      .. safeToString(value)
+      )
+  end
 end
-if count == 0 then
-  log("  <no enumerable keys>")
-end
-end)
-if not pairsOK then
+local function processVehicleDiagnostic()
+  if be == nil then
+    return
+  end
+  local vehicle = nil
+  local ok, result = pcall(function()
+    return be:getLastMailbox(
+      "multiffbjoy.vehicleDiagnostic"
+      )
+  end)
+  if not ok or result == nil then
+    return
+  end
+  if type(result) ~= "table" then
+    return
+  end
+  local requestId = result.requestId
+  if requestId == nil then
+    return
+  end
+  if requestId == lastDiagnosticRequest then
+    return
+  end
+  lastDiagnosticRequest = requestId
+  log("")
+  log("========================================")
+  log("VLUA VEHICLE DIAGNOSTIC RESULT")
+  log("========================================")
   log(
-    "pairs(vehicle) unavailable: "
-    .. tostring(pairsError)
+    "Vehicle ID = "
+    .. tostring(result.vehicleId)
+    )
+  log(
+    "VLUA JBeam = "
+    .. tostring(result.jbeam)
+    )
+  printDiagnosticTable(
+    "ELECTRICS",
+    result.electrics
+    )
+  printDiagnosticTable(
+    "AUTOMATIC / TRANSMISSION",
+    result.automatic
+    )
+  printDiagnosticTable(
+    "CONTROLLER",
+    result.controller
+    )
+  printDiagnosticTable(
+    "POWERTRAIN",
+    result.powertrain
+    )
+  printDiagnosticTable(
+    "INTERESTING GLOBALS",
+    result.globals
+    )
+  log("")
+  log("========================================")
+  log("END VLUA VEHICLE DIAGNOSTIC")
+  log("========================================")
+-- Keep the variable around for future configuration lookup.
+vehicle = result
+end
+-- ============================================================================
+-- Combined vehicle diagnostic
+-- ============================================================================
+local function runVehicleDiagnostic()
+  local vehicle, vehicleId = getPlayerVehicle()
+  if vehicle == nil or vehicleId == nil then
+    log(
+      "Cannot run vehicle diagnostic: "
+      .. "no active player vehicle."
+      )
+    return
+  end
+  printDirectVehicleMetadata(
+    vehicle,
+    vehicleId
+    )
+  queueVehicleDiagnostic(
+    vehicle,
+    vehicleId
     )
 end
-log("========================================")
-log("END VEHICLE METADATA DIAGNOSTIC")
-log("========================================")
-end
+-- ============================================================================
+-- Vehicle handling
+-- ============================================================================
 local function handleVehicleChange(vehicleId)
   log(
     "Player vehicle changed: "
@@ -410,22 +765,53 @@ local function handleVehicleChange(vehicleId)
     .. tostring(vehicleId)
     )
   currentVehicleId = vehicleId
-  if vehicleId == nil or vehicleId == 0 then
+  if vehicleId == nil or vehicleId == 0 or vehicleId == -1 then
     log("No active player vehicle.")
     return
   end
   requestReacquire()
--- Give BeamNG a short opportunity to finish populating
--- the vehicle object's configuration information.
+-- Vehicle spawning is asynchronous. Give the VLUA a little time to
+-- finish initializing before asking it for gearbox/controller state.
 core_jobsystem.create(function(job)
-  job.sleep(0.5)
-  if not initialized then
-    return
+  local elapsed = 0
+  while initialized and elapsed < 5.0 do
+    local playerId = getPlayerVehicleId()
+    if playerId == vehicleId then
+      local vehicle = nil
+      if be ~= nil then
+        local ok, result = pcall(function()
+          return be:getObjectByID(vehicleId)
+        end)
+        if ok then
+          vehicle = result
+        end
+      end
+      if vehicle ~= nil then
+        log(
+          "Running vehicle metadata diagnostic for "
+          .. tostring(vehicleId)
+          .. "."
+          )
+        printDirectVehicleMetadata(
+          vehicle,
+          vehicleId
+          )
+        queueVehicleDiagnostic(
+          vehicle,
+          vehicleId
+          )
+        return
+      end
+    end
+    job.sleep(0.25)
+    elapsed = elapsed + 0.25
   end
-  if currentVehicleId ~= vehicleId then
-    return
+  if initialized then
+    log(
+      "Vehicle diagnostic timed out for ID "
+      .. tostring(vehicleId)
+      )
   end
-  dumpVehicleMetadata(vehicleId)
 end)
 end
 local function onVehicleSwitched(oldId, newId)
@@ -442,8 +828,7 @@ local function onVehicleSpawned(vehicleId)
     "onVehicleSpawned: "
     .. tostring(vehicleId)
     )
-  local playerId =
-  getPlayerVehicleId()
+  local playerId = getPlayerVehicleId()
   if playerId == vehicleId then
     handleVehicleChange(vehicleId)
   end
@@ -455,6 +840,9 @@ local function onPlayerVehicleChanged(vehicleId)
     )
   handleVehicleChange(vehicleId)
 end
+-- ============================================================================
+-- Update
+-- ============================================================================
 local function onUpdate(dtReal, dtSim, dtRaw)
   if not initialized then
     return
@@ -462,7 +850,11 @@ local function onUpdate(dtReal, dtSim, dtRaw)
   if udp == nil then
     initializeUDP()
   end
+  processVehicleDiagnostic()
 end
+-- ============================================================================
+-- Extension lifecycle
+-- ============================================================================
 local function onExtensionLoaded()
   if initialized then
     return
@@ -473,8 +865,7 @@ local function onExtensionLoaded()
   core_jobsystem.create(function(job)
     local elapsed = 0
     while initialized and elapsed < 30 do
-      local vehicleId =
-      getPlayerVehicleId()
+      local vehicleId = getPlayerVehicleId()
       if vehicleId ~= nil then
         log(
           "Initial player vehicle detected: "
@@ -505,6 +896,9 @@ local function onExtensionUnloaded()
   udp = nil
   socket = nil
 end
+-- ============================================================================
+-- Exports
+-- ============================================================================
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
 M.onUpdate = onUpdate
