@@ -295,7 +295,7 @@ bool GearMatchesField(const ForceField& field, const VehicleState& state)
     return false;
 }
 
-void ApplyVehicleState(const VehicleState& state)
+void ApplyVehicleStateImpl(const VehicleState& state)
 {
     if (!IsForceFieldPresetLoaded())
         return;
@@ -339,10 +339,10 @@ void ApplyVehicleState(const VehicleState& state)
         Logf("Failed to apply vehicle-state forcefield \"%s\".", selected.name.c_str());
 }
 
-void ResetVehicleState()
+void ClearVehicleStateImpl()
 {
-    g_vehicleStateValid.store(false, std::memory_order_release);
-    std::lock_guard<std::mutex> stateLock(g_presetMutex);
+    g_vehicleStateValid = false;
+    std::lock_guard<std::mutex> lock(g_presetMutex);
     g_vehicleState = VehicleState{};
 }
 
@@ -357,6 +357,16 @@ void PresetMonitorThread()
     Log("Preset monitor thread stopped.");
 }
 } // namespace
+
+void ApplyVehicleState(const VehicleState& state)
+{
+    ApplyVehicleStateImpl(state);
+}
+
+void ClearVehicleState()
+{
+    ClearVehicleStateImpl();
+}
 
 bool LoadForceFieldPreset(const std::filesystem::path& path)
 {
@@ -513,7 +523,7 @@ void UpdatePresetTest()
 
 void StartPresetTest()
 {
-    ResetVehicleState();
+    ClearVehicleStateImpl();
     if (!IsForceFieldPresetLoaded() || !EnsureFFBDeviceReady())
         return;
     {
@@ -529,7 +539,7 @@ void StartPresetTest()
 
 void StopPresetTest()
 {
-    ResetVehicleState();
+    ClearVehicleStateImpl();
     {
         std::lock_guard<std::mutex> lock(g_presetMutex);
         g_presetTestState = PresetTestState{};
