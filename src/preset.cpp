@@ -528,8 +528,8 @@ void UpdatePresetTest()
     }
     if (!enabled || !IsForceFieldPresetLoaded() || !EnsureFFBDeviceReady())
         return;
-    if (g_vehicleStateValid.load(std::memory_order_acquire))
-        return;
+    //if (g_vehicleStateValid.load(std::memory_order_acquire))
+    //    return;
 
     LONG x = 0, y = 0;
     if (!ReadFFBJoystickPosition(x, y))
