@@ -295,50 +295,6 @@ bool GearMatchesField(const ForceField& field, const VehicleState& state)
     return false;
 }
 
-void ApplyVehicleState(const VehicleState& state)
-{
-    if (!IsForceFieldPresetLoaded())
-        return;
-    if (!EnsureFFBDeviceReady())
-        return;
-
-    ForceField selected;
-    bool found = false;
-    int index = -1;
-    {
-        std::lock_guard<std::mutex> lock(g_presetMutex);
-        g_vehicleState = state;
-        g_vehicleStateValid = true;
-        for (size_t i = 0; i < g_loadedPreset.forceFields.size(); ++i)
-        {
-            if (GearMatchesField(g_loadedPreset.forceFields[i], state))
-            {
-                selected = g_loadedPreset.forceFields[i];
-                index = static_cast<int>(i);
-                found = true;
-                break;
-            }
-        }
-    }
-
-    if (!found)
-    {
-        Logf("Vehicle state has no matching forcefield: gear=\"%s\" gearIndex=%d.",
-             state.gear.c_str(), state.gearIndex);
-        return;
-    }
-
-    Logf("Vehicle gear state -> zone \"%s\" (index=%d, gear=%s, gearIndex=%d).",
-         selected.name.c_str(), index, state.gear.c_str(), state.gearIndex);
-    if (selected.forceType != 1)
-    {
-        StopSpring();
-        return;
-    }
-    if (!SetSpringForceField(selected))
-        Logf("Failed to apply vehicle-state forcefield \"%s\".", selected.name.c_str());
-}
-
 void ResetVehicleState()
 {
     g_vehicleStateValid.store(false, std::memory_order_release);
