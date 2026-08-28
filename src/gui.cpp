@@ -1,9 +1,6 @@
 #include "common.h"
 namespace MultiFFBJoy
 {
-    HWND g_mainWindow = nullptr;
-    HWND g_statusWindow = nullptr;
-    HWND g_logWindow = nullptr;
     std::wstring Utf8ToWide(const char* text)
     {
         if (!text)

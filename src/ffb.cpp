@@ -376,7 +376,7 @@ bool EnsureFFBDeviceReady()
         return false;
     if (g_ffbDevice && IsFFBDeviceUsable())
     {
-        std::lock_guard<std::mutex> lock(g_stateMutex);
+        std::lock_guard<std::mutex> stateLock(g_stateMutex);
         g_state.acquired = true;
         return true;
     }
