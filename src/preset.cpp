@@ -266,21 +266,37 @@ std::string NormalizeGearToken(const std::string& value)
     return result;
 }
 
+int ExtractFirstInteger(const std::string& value)
+{
+    bool found = false;
+    int number = 0;
+
+    for (unsigned char c : value)
+    {
+        if (std::isdigit(c))
+        {
+            found = true;
+            number = number * 10 + static_cast<int>(c - '0');
+        }
+        else if (found)
+        {
+            break;
+        }
+    }
+
+    return found ? number : -1;
+}
+
 bool GearMatchesField(const ForceField& field, const VehicleState& state)
 {
     const std::string gear = NormalizeGearToken(state.gear);
     const std::string name = NormalizeGearToken(field.name);
-    if (gear.empty() || name.empty()) return false;
 
-    if (gear == "P" && name == "PARK") return true;
-    if (gear == "R" && name == "REVERSE") return true;
-    if (gear == "N" && name == "NEUTRAL") return true;
-    if (gear == "D" && name == "DRIVE") return true;
+    if (name.empty())
+        return false;
 
-    // Some BeamNG vehicle states expose the shifter mode (for example
-    // "neutral" / "drive") before the public gear string is populated.
-    // Use that documented transmission state as a fallback so the preset
-    // still has a valid detent immediately after loading.
+    // BeamNG can briefly report the shifter mode before getGearName() is
+    // populated. Do this check before rejecting an empty gear string.
     const std::string mode = NormalizeGearToken(state.gearboxMode);
     if (gear.empty())
     {
@@ -288,14 +304,39 @@ bool GearMatchesField(const ForceField& field, const VehicleState& state)
         if (mode == "REVERSE" && name == "REVERSE") return true;
         if (mode == "NEUTRAL" && name == "NEUTRAL") return true;
         if (mode == "DRIVE" && name == "DRIVE") return true;
-        if (mode == "LOW" && (name == "LOW" || name == "1")) return true;
+        if (mode == "LOW" && (name == "LOW" || ExtractFirstInteger(name) == 1)) return true;
     }
-    if ((gear == "1" || gear == "L" || gear == "LOW") &&
-        (name == "1" || name == "LOW" || name == "FIRST" || name == "FIRSTGEAR")) return true;
-    if ((gear == "2" || gear == "2ND" || gear == "SECOND") &&
-        (name == "2" || name == "2ND" || name == "SECOND" || name == "SECONDGEAR")) return true;
 
-    // Generic numbered manual/sequential positions.
+    // Standard PRND labels.
+    if (gear == "P" && name == "PARK") return true;
+    if (gear == "R" && name == "REVERSE") return true;
+    if (gear == "N" && name == "NEUTRAL") return true;
+    if (gear == "D" && name == "DRIVE") return true;
+
+    // Numeric gear matching is intentionally based on the digits in the
+    // human-readable forcefield name:
+    //
+    //   "1st"  -> 1
+    //   "2nd"  -> 2
+    //   "12th" -> 12
+    //
+    // This keeps preset naming flexible without requiring a hard-coded list
+    // of ordinal suffixes.
+    const int gearNumber = ExtractFirstInteger(gear);
+    const int fieldNumber = ExtractFirstInteger(name);
+    if (gearNumber >= 0 && fieldNumber >= 0 && gearNumber == fieldNumber)
+        return true;
+
+    // Common non-numeric first/second/low aliases.
+    if ((gear == "L" || gear == "LOW") &&
+        (name == "LOW" || name == "L" || name == "FIRST" || name == "FIRSTGEAR"))
+        return true;
+
+    if ((gear == "SECOND" || gear == "2ND") &&
+        (name == "SECOND" || name == "SECONDGEAR" || name == "2ND"))
+        return true;
+
+    // Generic sequential gear values supplied by the forcefield file.
     if (state.gearIndex != 0)
     {
         if (field.primarySequentialGearValue == state.gearIndex ||
@@ -303,10 +344,8 @@ bool GearMatchesField(const ForceField& field, const VehicleState& state)
             return true;
     }
 
-    // Last-resort exact normalized-name match, useful for custom presets
-    // whose forcefield names are themselves gear labels (e.g. "1", "2", "R").
-    if (gear == name) return true;
-    return false;
+    // Last-resort exact normalized-name match.
+    return !gear.empty() && gear == name;
 }
 
 void ApplyVehicleStateImpl(const VehicleState& state)

@@ -11,6 +11,11 @@ sockaddr_in g_lastClientAddress{};
 bool g_haveLastClientAddress = false;
 std::mutex g_clientAddressMutex;
 
+std::mutex g_connectionMutex;
+std::chrono::steady_clock::time_point g_lastHello{};
+bool g_connectionAlive = false;
+constexpr long long HELLO_TIMEOUT_MS = 6000;
+
 void TouchCommandWatchdog()
 {
     std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -61,7 +66,20 @@ void ProcessCommand(const std::string& command)
 
     if (operation == "HELLO")
     {
-        Log("RX: HELLO from BeamNG Lua; connection is ALIVE.");
+        bool announceAlive = false;
+        {
+            std::lock_guard<std::mutex> connectionLock(g_connectionMutex);
+            g_lastHello = std::chrono::steady_clock::now();
+            if (!g_connectionAlive)
+            {
+                g_connectionAlive = true;
+                announceAlive = true;
+            }
+        }
+
+        if (announceAlive)
+            Log("BeamNG Lua connection is ALIVE.");
+
         SendUdpReply("HELLO_ACK|MultiFFBJoy");
         return;
     }
@@ -234,6 +252,23 @@ void NetworkThread()
                 Logf("recvfrom() failed: %d", error);
         }
 
+        bool connectionLost = false;
+        {
+            std::lock_guard<std::mutex> connectionLock(g_connectionMutex);
+            if (g_connectionAlive)
+            {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - g_lastHello);
+                if (elapsed.count() > HELLO_TIMEOUT_MS)
+                {
+                    g_connectionAlive = false;
+                    connectionLost = true;
+                }
+            }
+        }
+        if (connectionLost)
+            Log("BeamNG Lua connection is LOST.");
+
         bool timedOut = false;
         bool persistent = false;
         {
@@ -302,6 +337,11 @@ bool StartUdpServer()
     }
 
     g_networkRunning = true;
+    {
+        std::lock_guard<std::mutex> connectionLock(g_connectionMutex);
+        g_lastHello = std::chrono::steady_clock::now();
+        g_connectionAlive = false;
+    }
     g_state.lastCommand = std::chrono::steady_clock::now();
     Logf("UDP server listening on 127.0.0.1:%d.", UDP_PORT);
     try
