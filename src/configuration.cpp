@@ -170,7 +170,16 @@ std::filesystem::path GetApplicationDirectory()
 }
 std::filesystem::path GetConfigurationFilePath()
 {
-    return GetApplicationDirectory() / "Configuration.txt";
+    const auto applicationPath = GetApplicationDirectory() / "Configuration.txt";
+    if (std::filesystem::exists(applicationPath))
+        return applicationPath;
+    const auto workingDirectoryPath =
+    std::filesystem::current_path() / "Configuration.txt";
+    if (std::filesystem::exists(workingDirectoryPath))
+        return workingDirectoryPath;
+// Return the preferred location so the failure message tells us
+// where the helper expects the configuration to live.
+    return applicationPath;
 }
 bool LoadConfigurationFile()
 {
@@ -178,6 +187,15 @@ bool LoadConfigurationFile()
     const auto path = GetConfigurationFilePath();
     if (!ParseFile(path, parsed))
     {
+        const auto applicationPath =
+        GetApplicationDirectory() / "Configuration.txt";
+        const auto workingDirectoryPath =
+        std::filesystem::current_path() / "Configuration.txt";
+        Logf("Configuration.txt not found.");
+        Logf("  Executable location: %s",
+            applicationPath.string().c_str());
+        Logf("  Working directory:  %s",
+            workingDirectoryPath.string().c_str());
         std::lock_guard<std::mutex> lock(g_configurationMutex);
         g_configurationRoot = {};
         g_configurationLoaded = false;
