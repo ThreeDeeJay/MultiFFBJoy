@@ -183,30 +183,36 @@ std::filesystem::path GetConfigurationFilePath()
 }
 bool LoadConfigurationFile()
 {
-    ConfigurationNode parsed;
     const auto path = GetConfigurationFilePath();
+    std::error_code error;
+    const auto fileTime =
+    std::filesystem::last_write_time(path, error);
+    {
+        std::lock_guard<std::mutex> stateLock(g_configurationMutex);
+        if (g_configurationLoaded &&
+            !error &&
+            g_configurationFileTime == fileTime)
+        {
+            return true;
+        }
+    }
+    ConfigurationNode parsed;
     if (!ParseFile(path, parsed))
     {
-        const auto applicationPath =
-        GetApplicationDirectory() / "Configuration.txt";
-        const auto workingDirectoryPath =
-        std::filesystem::current_path() / "Configuration.txt";
-        Logf("Configuration.txt not found.");
-        Logf("  Executable location: %s",
-            applicationPath.string().c_str());
-        Logf("  Working directory:  %s",
-            workingDirectoryPath.string().c_str());
-        std::lock_guard<std::mutex> lock(g_configurationMutex);
+        std::lock_guard<std::mutex> stateLock(g_configurationMutex);
         g_configurationRoot = {};
         g_configurationLoaded = false;
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(g_configurationMutex);
+        std::lock_guard<std::mutex> stateLock(g_configurationMutex);
         g_configurationRoot = std::move(parsed);
         g_configurationLoaded = true;
+        g_configurationFileTime = fileTime;
     }
-    Logf("Configuration loaded: %s", path.string().c_str());
+    Logf(
+        "Configuration loaded: %s",
+        path.string().c_str());
     return true;
 }
 bool ResolveVehicleProfile(const VehicleProfileRequest& request,
