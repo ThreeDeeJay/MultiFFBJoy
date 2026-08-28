@@ -8,16 +8,21 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <exception>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 namespace MultiFFBJoy
 {
     inline constexpr UINT WM_APP_LOG = WM_APP + 1;
+    inline constexpr UINT WM_APP_STATUS = WM_APP + 2;
     inline constexpr int UDP_PORT = 65458;
     inline constexpr DWORD COMMAND_TIMEOUT_MS = 250;
     inline constexpr DWORD SOCKET_TIMEOUT_MS = 25;
@@ -50,36 +55,7 @@ namespace MultiFFBJoy
     extern std::atomic<bool> g_networkRunning;
     extern std::atomic<bool> g_reacquiring;
     extern std::mutex g_stateMutex;
-    struct DeviceState
-    {
-        std::wstring name = L"(none)";
-        DWORD axisCount = 0;
-        bool forceFeedback = false;
-        bool acquired = false;
-        bool springSupported = false;
-        DWORD xAxisOffset = DIJOFS_X;
-        DWORD yAxisOffset = DIJOFS_Y;
-        float springStrength = 0.0f;
-        bool springPersistent = false;
-        std::chrono::steady_clock::time_point lastCommand =
-        std::chrono::steady_clock::now();
-    };
-    extern DeviceState g_state;
-    struct DeviceCandidate
-    {
-        GUID guid{};
-        std::wstring name;
-        DWORD axisCount = 0;
-        bool forceFeedback = false;
-        bool hasXAxis = false;
-        bool hasYAxis = false;
-        bool springSupported = false;
-        DWORD springEffType = 0;
-        DWORD springStaticParams = 0;
-        DWORD springDynamicParams = 0;
-        std::vector<DWORD> ffbActuatorOffsets;
-    };
-    extern std::vector<DeviceCandidate> g_candidates;
+    extern std::recursive_mutex g_ffbMutex;
     struct ForceFieldVertex
     {
         LONG x = 0;
@@ -106,6 +82,41 @@ namespace MultiFFBJoy
         LONG powerY = 0;
         LONG offsetX = 0;
         LONG offsetY = 0;
+    };
+    struct ActiveSpringState
+    {
+        bool active = false;
+        bool forceField = false;
+        float strength = 0.0f;
+        ForceField field;
+    };
+    struct DeviceState
+    {
+        std::wstring name = L"(none)";
+        DWORD axisCount = 0;
+        bool forceFeedback = false;
+        bool acquired = false;
+        bool springSupported = false;
+        DWORD xAxisOffset = DIJOFS_X;
+        DWORD yAxisOffset = DIJOFS_Y;
+        float springStrength = 0.0f;
+        bool springPersistent = false;
+        std::chrono::steady_clock::time_point lastCommand =
+        std::chrono::steady_clock::now();
+    };
+    struct DeviceCandidate
+    {
+        GUID guid{};
+        std::wstring name;
+        DWORD axisCount = 0;
+        bool forceFeedback = false;
+        bool hasXAxis = false;
+        bool hasYAxis = false;
+        bool springSupported = false;
+        DWORD springEffType = 0;
+        DWORD springStaticParams = 0;
+        DWORD springDynamicParams = 0;
+        std::vector<DWORD> ffbActuatorOffsets;
     };
     struct FFBPreset
     {
@@ -140,100 +151,71 @@ namespace MultiFFBJoy
         std::filesystem::path presetPath;
         std::string sourcePath;
     };
-    bool LoadConfigurationFile();
-    bool ResolveVehicleProfile(
-        const VehicleProfileRequest& request,
-        ResolvedProfile& result);
-    bool LoadResolvedVehicleProfile(
-        const VehicleProfileRequest& request);
-    std::filesystem::path
-    GetConfigurationFilePath();
+    extern DeviceState g_state;
+    extern ActiveSpringState g_activeSpring;
+    extern std::vector<DeviceCandidate> g_candidates;
     extern std::mutex g_presetMutex;
     extern FFBPreset g_loadedPreset;
     extern std::vector<PresetInfo> g_availablePresets;
     extern PresetTestState g_presetTestState;
-// -----------------------------------------------------------------------------
-// Logging
-// -----------------------------------------------------------------------------
+// Logging / GUI.
     void Log(const std::string& text);
 template <typename... Args>
     void Logf(const char* format, Args... args)
     {
         char buffer[2048]{};
-        sprintf_s(
-            buffer,
-            sizeof(buffer),
-            format,
-            args...);
+        sprintf_s(buffer, sizeof(buffer), format, args...);
         Log(buffer);
     }
-// -----------------------------------------------------------------------------
-// GUI
-// -----------------------------------------------------------------------------
     std::wstring Utf8ToWide(const char* text);
-    bool CreateMainWindow(
-        HINSTANCE instance,
-        int showCommand);
+    bool CreateMainWindow(HINSTANCE instance, int showCommand);
     int RunMessageLoop();
     void DestroyMainWindow();
     void UpdateStatus();
     void PopulatePresetList();
-// -----------------------------------------------------------------------------
-// UDP
-// -----------------------------------------------------------------------------
+// Paths / configuration.
+    std::filesystem::path GetApplicationDirectory();
+    std::filesystem::path GetConfigurationFilePath();
+    bool LoadConfigurationFile();
+    bool ResolveVehicleProfile(const VehicleProfileRequest& request,
+        ResolvedProfile& result);
+    bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request);
+// UDP.
     bool StartUdpServer();
     void StopUdpServer();
-    void SendUdpCommand(
-        const std::string& command);
-// -----------------------------------------------------------------------------
-// FFB
-// -----------------------------------------------------------------------------
+    void SendUdpCommand(const std::string& command);
+// DirectInput / FFB.
+    bool InitializeDirectInput(HINSTANCE instance);
+    void ShutdownDirectInput();
+    bool SelectFirstSuitableDevice();
+    void ReleaseFFBDevice();
     bool CreateSpringEffect();
     bool CreateTestConstantForceEffect();
     bool IsFFBDeviceUsable();
-    void StopSpring();
     void StopSpringForRelease();
+    void StopSpring();
     void StopTestConstantForce();
-    bool SetSpringStrength(
-        float strength);
-    bool SetTestConstantForce(
-        LONG x,
-        LONG y);
+    bool SetSpringStrength(float strength);
+    bool SetSpringForceField(const ForceField& forceField);
+    bool SetTestConstantForce(LONG x, LONG y);
     bool EnsureFFBDeviceReady();
     bool ReacquireFFBDevice();
     void StartFFBWatchdog();
     void StopFFBWatchdog();
-    bool InitializeDirectInput(
-        HINSTANCE instance);
-    void ShutdownDirectInput();
-    bool SelectFirstSuitableDevice();
-    void ReleaseFFBDevice();
-    bool ReadFFBJoystickPosition(
-        LONG& x,
-        LONG& y);
-// -----------------------------------------------------------------------------
-// Presets
-// -----------------------------------------------------------------------------
-    std::vector<std::filesystem::path>
-    EnumerateForceFieldPresets();
-    bool LoadForceFieldPreset(
-        const std::filesystem::path& path);
+    bool ReadFFBJoystickPosition(LONG& x, LONG& y);
+// Presets / PRND.
+    std::vector<std::filesystem::path> EnumerateForceFieldPresets();
+    bool LoadForceFieldPreset(const std::filesystem::path& path);
     void ClearForceFieldPreset();
     void UpdatePresetTest();
     void StartPresetTest();
     void StopPresetTest();
-    bool SetSpringForceField(
-        const ForceField& forceField);
+    bool SetSpringForceField(const ForceField& forceField);
     bool LoadHardCodedPRNDReference();
     bool ApplyHardCodedPRNDZone(int zoneIndex);
     void StartHardCodedPRNDTest();
     void StopHardCodedPRNDTest();
-// Returns the active forcefield for a position expressed in
-// FFShifter coordinates (-10000..10000).
-    int FindForceFieldAtPosition(
-        LONG x,
-        LONG y);
+    int FindForceFieldAtPosition(LONG x, LONG y);
     bool IsForceFieldPresetLoaded();
-    std::filesystem::path
-    GetLoadedForceFieldPresetPath();
-}
+    std::filesystem::path GetLoadedForceFieldPresetPath();
+} // namespace MultiFFBJoy

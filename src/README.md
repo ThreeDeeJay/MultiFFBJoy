@@ -1,55 +1,79 @@
-# MultiFFBJoy refactored
+# MultiFFBJoy
 
-Files:
-- main.cpp          - startup/shutdown and orchestration
-- common.h          - shared declarations/types/constants
-- gui.cpp           - Win32 window, status, logging and test buttons
-- udp.cpp           - UDP server and command parser
-- device.cpp        - DirectInput enumeration, selection, acquisition and release
-- ffb.cpp           - spring/constant effects, re-acquisition and watchdog
+DirectInput FFB bridge for BeamNG.drive and other UDP-capable clients.
 
-Build:
-Compile all six .cpp/.h files into the same executable. The existing
-DirectInput 8 / DXGUID / Winsock libraries are linked by main.cpp.
+## Source layout
 
-Important fix:
-The previous SelectFirstSuitableDevice() contained an accidental call to
-SelectFirstSuitableDevice() from inside itself. That caused recursive
-re-selection, repeated effect creation/release and the apparent hang plus
-short bursts of centering force. The refactored version has no such call.
+- `main.cpp` — application startup/shutdown and global state
+- `common.h` — shared types, constants and API declarations
+- `gui.cpp` — Win32 GUI and thread-safe log/status dispatch
+- `udp.cpp` — UDP server and command parser
+- `device.cpp` — DirectInput enumeration, selection and acquisition
+- `ffb.cpp` — DirectInput effects, watchdog and recovery
+- `preset.cpp` — `.fff` parsing, polygon zone selection and PRND reference
+- `configuration.cpp/.h` — tab-indented profile configuration and inheritance
 
-Also:
-- The watchdog is started exactly once by main.cpp.
-- Re-acquisition cannot overlap because of g_reacquiring.
-- Re-acquisition does not call Acquire() twice.
-- Spring SetParameters() no longer includes DIEP_START; it downloads the
-  parameters and then calls Start() once.
-- ReleaseFFBDevice() preserves springPersistent so a persistent spring can
-  be restored after a device loss.
-- Normal STOP clears springPersistent.
-- UDP shutdown and watchdog shutdown are separate.
+## Important behavior preserved
 
-## PRND reference test
+The experimentally validated SideWinder Force Feedback 2 mapping is retained:
 
-The GUI now includes a hard-coded PRND reference test independent of `.fff` parsing:
+- DirectInput spring `condition[0]` receives logical Y.
+- DirectInput spring `condition[1]` receives logical X.
+- Reverse and Neutral use spring equilibria inside their zones.
+- Park and Drive use spring equilibria at the top/bottom travel limits while
+  keeping X centered, reproducing the observed straight PRND behavior.
 
-- `PRND Test` loads an in-memory straight PRND preset and starts the existing position-aware monitor.
-- `PRND Park`, `PRND Reverse`, `PRND Neutral`, and `PRND Drive` apply one reference spring directly.
+Spring forcefields are persistent state. If the DirectInput device is lost,
+re-acquisition restores the last active spring automatically.
 
-The hard-coded reference uses the supplied profile values:
+## Configuration.txt
 
-- Park: center `(0,-8500)`, power `(-10000,10000)`
-- Reverse: center `(0,-3500)`, power `(10000,10000)`
-- Neutral: center `(0,3500)`, power `(10000,10000)`
-- Drive: center `(0,8500)`, power `(-10000,10000)`
+The resolver supports general-to-specific inheritance. `Transmission` is a
+sibling of `Vehicle`, so transmission defaults can be combined with vehicle
+and configuration overrides.
 
-The reference zones are full-width straight rectangles in FFShifter coordinates, ordered top-to-bottom as Park, Reverse, Neutral, Drive.
+Example:
 
-### FFB2 condition-axis mapping
+```text
+Profiles
+\tBeamNG.drive
+\t\tVehicle
+\t\t\tCar
+\t\t\t\tmiramar=PRND21
+\t\t\t\t\tluxe_A=PRNDL
+\t\t\tAircraft=Flightstick
+\t\tTransmission
+\t\t\tAutomatic=PRND
+\t\t\tManual=5RDR
+```
 
-Observed behavior from the FFB2 showed that the old implementation put the logical vertical offset into `DICONDITION[1]`, while that condition slot produced the horizontal physical pull. The new implementation therefore translates logical FFShifter X/Y to FFB2 condition slots as:
+Node names may be quoted. Quoted names are matched case-insensitively, while
+quotes are treated as syntax rather than part of the key. This permits either
+language-specific names or BeamNG internal codenames.
 
-- `condition[0]` = logical Y
-- `condition[1]` = logical X
+Preset paths are resolved relative to the executable directory, not the
+process working directory.
 
-The log prints the actual condition offsets and coefficients whenever a reference zone is applied, making this easy to verify against the physical stick behavior.
+## UDP commands
+
+- `PING`
+- `PROFILE <preset|preset.fff>` — loads and starts position-aware tracking
+- `STOP`
+- `REACQUIRE`
+- `CENTER`
+- `SPRING <0..1>`
+- `TEST_FFB <x> <y>`
+
+## Safety / concurrency changes
+
+- All DirectInput device/effect operations are serialized by one recursive FFB
+  mutex, preventing the watchdog, UDP thread and preset monitor from touching
+  COM effect pointers concurrently.
+- Re-acquisition is single-flight via `g_reacquiring`.
+- UDP `WSAStartup`/`WSACleanup` is balanced.
+- GUI updates from worker threads are posted to the GUI thread.
+- UTF-8 to UTF-16 conversion no longer writes past the destination buffer.
+- `.fff` zone selection uses the actual polygon instead of only its bounding box.
+- `PROFILE` starts the preset monitor rather than applying only one sample.
+- Forcefield springs mark themselves persistent, preventing the UDP safety timer
+  from immediately stopping a valid position-aware profile.

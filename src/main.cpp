@@ -4,6 +4,9 @@
 #pragma comment(lib, "ws2_32.lib")
 namespace MultiFFBJoy
 {
+    HWND g_mainWindow = nullptr;
+    HWND g_statusWindow = nullptr;
+    HWND g_logWindow = nullptr;
     IDirectInput8W* g_directInput = nullptr;
     IDirectInputDevice8W* g_ffbDevice = nullptr;
     IDirectInputEffect* g_springEffect = nullptr;
@@ -15,53 +18,37 @@ namespace MultiFFBJoy
     std::atomic<bool> g_networkRunning{false};
     std::atomic<bool> g_reacquiring{false};
     std::mutex g_stateMutex;
+    std::recursive_mutex g_ffbMutex;
     DeviceState g_state;
+    ActiveSpringState g_activeSpring;
     std::vector<DeviceCandidate> g_candidates;
 }
 using namespace MultiFFBJoy;
-int APIENTRY wWinMain(
-    HINSTANCE instance,
-    HINSTANCE,
-    LPWSTR,
-    int showCommand)
+int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
 {
     Log("MultiFFBJoy starting.");
-    if (!CreateMainWindow(
-        instance,
-        showCommand))
-    {
+    if (!CreateMainWindow(instance, showCommand))
         return 1;
-    }
     g_running = true;
     if (!InitializeDirectInput(instance))
-    {
-        Log(
-            "DirectInput initialization failed.");
-    }
+        Log("DirectInput initialization failed.");
     else
-    {
-        Log("FFB joystick initialized successfully.");
-    }
+        Log("DirectInput initialized.");
     if (!ReacquireFFBDevice())
-    {
-        Log(
-            "Initial FFB acquisition failed; "
-            "watchdog will retry later.");
-    }
+        Log("Initial FFB acquisition failed; watchdog will retry later.");
     StartFFBWatchdog();
     if (!StartUdpServer())
-    {
-        Log(
-            "UDP server could not be started.");
-    }
+        Log("UDP server could not be started.");
     PopulatePresetList();
-    RunMessageLoop();
-    StopUdpServer();
+    UpdateStatus();
+    const int exitCode = RunMessageLoop();
+// Stop producers before tearing down the objects they use.
     g_running = false;
+    StopUdpServer();
     StopFFBWatchdog();
     ClearForceFieldPreset();
     ReleaseFFBDevice();
     ShutdownDirectInput();
     DestroyMainWindow();
-    return 0;
+    return exitCode;
 }

@@ -1,11 +1,6 @@
-#include "common.h"
 #include "configuration.h"
-#include <algorithm>
 #include <cctype>
-#include <filesystem>
-#include <fstream>
 #include <sstream>
-#include <vector>
 namespace MultiFFBJoy
 {
     namespace
@@ -14,462 +9,305 @@ namespace MultiFFBJoy
         {
             std::string name;
             std::string preset;
-            int depth = 0;
-            ConfigurationNode* parent = nullptr;
             std::vector<ConfigurationNode> children;
         };
-        ConfigurationNode g_configurationRoot;
         std::mutex g_configurationMutex;
+        ConfigurationNode g_configurationRoot;
         bool g_configurationLoaded = false;
-        std::string Trim(
-            const std::string& value)
+        std::string Trim(const std::string& value)
         {
-            const auto first =
-            value.find_first_not_of(" \t\r\n");
+            const size_t first = value.find_first_not_of(" \t\r\n");
             if (first == std::string::npos)
                 return {};
-            const auto last =
-            value.find_last_not_of(" \t\r\n");
-            return value.substr(
-                first,
-                last - first + 1);
+            const size_t last = value.find_last_not_of(" \t\r\n");
+            return value.substr(first, last - first + 1);
         }
-        std::string ToLower(
-            std::string value)
+        std::string Unquote(std::string value)
         {
-            std::transform(
-                value.begin(),
-                value.end(),
-                value.begin(),
-                [](unsigned char c)
-                {
-                    return static_cast<char>(
-                        std::tolower(c));
-                });
+            value = Trim(value);
+            if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+                value = value.substr(1, value.size() - 2);
             return value;
         }
-        bool EqualsIgnoreCase(
-            const std::string& a,
-            const std::string& b)
+        bool EqualsIgnoreCase(const std::string& a, const std::string& b)
         {
-            return ToLower(a) == ToLower(b);
-        }
-        bool ParseNodeLine(
-            const std::string& line,
-            std::string& name,
-            std::string& preset)
-        {
-            std::string text = Trim(line);
-            if (text.empty())
+            if (a.size() != b.size())
                 return false;
-            if (text[0] == '#')
-                return false;
-            if (text.rfind("//", 0) == 0)
-                return false;
-            const size_t equals =
-            text.find('=');
-            if (equals == std::string::npos)
+            for (size_t i = 0; i < a.size(); ++i)
             {
-                name = Trim(text);
-                preset.clear();
-                return !name.empty();
-            }
-            name =
-            Trim(
-                text.substr(
-                    0,
-                    equals));
-            preset =
-            Trim(
-                text.substr(
-                    equals + 1));
-            return !name.empty();
-        }
-        int GetTabDepth(
-            const std::string& line)
-        {
-            int depth = 0;
-            for (const char c : line)
-            {
-                if (c == '\t')
-                {
-                    ++depth;
-                    continue;
-                }
-        /*
-         * Spaces before a node are deliberately not
-         * treated as indentation. Configuration.txt
-         * uses literal TAB characters.
-         */
-                if (c == ' ')
-                    continue;
-                break;
-            }
-            return depth;
-        }
-        std::string StripIndent(
-            const std::string& line)
-        {
-            size_t position = 0;
-            while (
-                position < line.size() &&
-                (line[position] == '\t' ||
-                   line[position] == ' '))
-            {
-                ++position;
-            }
-            return line.substr(position);
-        }
-        ConfigurationNode* FindChild(
-            ConfigurationNode& parent,
-            const std::string& name)
-        {
-            for (auto& child : parent.children)
-            {
-                if (EqualsIgnoreCase(
-                    child.name,
-                    name))
-                {
-                    return &child;
-                }
-            }
-            return nullptr;
-        }
-        const ConfigurationNode* FindChild(
-            const ConfigurationNode& parent,
-            const std::string& name)
-        {
-            for (const auto& child : parent.children)
-            {
-                if (EqualsIgnoreCase(
-                    child.name,
-                    name))
-                {
-                    return &child;
-                }
-            }
-            return nullptr;
-        }
-        bool ParseConfigurationFile(
-            const std::filesystem::path& path,
-            ConfigurationNode& root)
-        {
-            std::ifstream file(
-                path,
-                std::ios::in);
-            if (!file)
-            {
-                Logf(
-                    "Configuration file could not be opened: %s",
-                    path.string().c_str());
-                return false;
-            }
-            root = ConfigurationNode{};
-            root.name = "ROOT";
-            root.depth = -1;
-            std::vector<ConfigurationNode*> stack;
-            stack.push_back(&root);
-            std::string line;
-            size_t lineNumber = 0;
-            while (std::getline(file, line))
-            {
-                ++lineNumber;
-                if (line.empty())
-                    continue;
-                const int depth =
-                GetTabDepth(line);
-                const std::string text =
-                StripIndent(line);
-                std::string name;
-                std::string preset;
-                if (!ParseNodeLine(
-                    text,
-                    name,
-                    preset))
-                {
-                    continue;
-                }
-        /*
-         * The tree is expected to increase by at most
-         * one level at a time.
-         */
-                if (depth > static_cast<int>(stack.size()))
-                {
-                    Logf(
-                        "Configuration.txt line %zu: invalid indentation.",
-                        lineNumber);
+                const unsigned char ca = static_cast<unsigned char>(a[i]);
+                const unsigned char cb = static_cast<unsigned char>(b[i]);
+                if (std::tolower(ca) != std::tolower(cb))
                     return false;
-                }
-                while (
-                    static_cast<int>(stack.size()) >
-                    depth + 1)
-                {
-                    stack.pop_back();
-                }
-                ConfigurationNode* parent =
-                stack.back();
-                parent->children.emplace_back();
-                ConfigurationNode& node =
-                parent->children.back();
-                node.name = name;
-                node.preset = preset;
-                node.depth = depth;
-                node.parent = parent;
-                stack.push_back(&node);
-            }
-            if (root.children.empty())
-            {
-                Log(
-                    "Configuration.txt contains no entries.");
-                return false;
             }
             return true;
         }
-        const ConfigurationNode* MatchLevel(
-            const ConfigurationNode* parent,
-            const std::string& name)
+        int IndentDepth(const std::string& line)
         {
-            if (parent == nullptr ||
-                name.empty())
+            int depth = 0;
+            size_t i = 0;
+            while (i < line.size())
             {
-                return nullptr;
-            }
-            return FindChild(
-                *parent,
-                name);
-        }
-        std::string EffectivePreset(
-            const std::string& inherited,
-            const ConfigurationNode* node)
-        {
-            if (node == nullptr)
-                return inherited;
-            if (!node->preset.empty())
-                return node->preset;
-            return inherited;
-        }
-        bool ResolveProfileInternal(
-            const VehicleProfileRequest& request,
-            ResolvedProfile& result)
-        {
-            const ConfigurationNode* profiles =
-            FindChild(
-                g_configurationRoot,
-                "Profiles");
-            if (profiles == nullptr)
-            {
-                Log(
-                    "Configuration.txt has no Profiles root.");
-                return false;
-            }
-            const ConfigurationNode* game =
-            MatchLevel(
-                profiles,
-                request.game);
-            if (game == nullptr)
-            {
-                return false;
-            }
-            std::string preset =
-            EffectivePreset(
-                {},
-                game);
-            const ConfigurationNode* type =
-            MatchLevel(
-                game,
-                request.vehicleType);
-            if (type != nullptr)
-            {
-                preset =
-                EffectivePreset(
-                    preset,
-                    type);
-            }
-            if (type == nullptr)
-            {
-        /*
-         * Vehicle entries can also be placed directly
-         * beneath the game node if desired.
-         */
-                type = game;
-            }
-            const ConfigurationNode* vehicle =
-            MatchLevel(
-                type,
-                request.vehicle);
-            if (vehicle != nullptr)
-            {
-                preset =
-                EffectivePreset(
-                    preset,
-                    vehicle);
-                const ConfigurationNode* configuration =
-                MatchLevel(
-                    vehicle,
-                    request.configuration);
-                if (configuration != nullptr)
+                if (line[i] == '\t')
                 {
-                    preset =
-                    EffectivePreset(
-                        preset,
-                        configuration);
-                    result.sourcePath =
-                    "Profiles > " +
-                    request.game +
-                    " > " +
-                    request.vehicleType +
-                    " > " +
-                    request.vehicle +
-                    " > " +
-                    request.configuration;
+                    ++depth;
+                    ++i;
+                }
+                else if (line[i] == ' ')
+                {
+                    ++i;
                 }
                 else
                 {
-                    result.sourcePath =
-                    "Profiles > " +
-                    request.game +
-                    " > " +
-                    request.vehicleType +
-                    " > " +
-                    request.vehicle;
+                    break;
                 }
+            }
+            return depth;
+        }
+        bool ParseNode(const std::string& raw, std::string& name, std::string& preset)
+        {
+            const std::string line = Trim(raw);
+            if (line.empty() || line[0] == '#' || line.rfind("//", 0) == 0)
+                return false;
+// Find the first '=' outside double quotes.
+            bool quoted = false;
+            size_t separator = std::string::npos;
+            for (size_t i = 0; i < line.size(); ++i)
+            {
+                if (line[i] == '"')
+                    quoted = !quoted;
+                else if (line[i] == '=' && !quoted)
+                {
+                    separator = i;
+                    break;
+                }
+            }
+            if (separator == std::string::npos)
+            {
+                name = Unquote(line);
+                preset.clear();
             }
             else
             {
-                result.sourcePath =
-                "Profiles > " +
-                request.game +
-                " > " +
-                request.vehicleType;
+                name = Unquote(line.substr(0, separator));
+                preset = Unquote(line.substr(separator + 1));
             }
-            if (preset.empty())
+            return !name.empty();
+        }
+        const ConfigurationNode* FindChild(const ConfigurationNode& parent,
+            const std::string& name)
+        {
+            if (name.empty())
+                return nullptr;
+            for (const auto& child : parent.children)
+                if (EqualsIgnoreCase(child.name, name))
+                    return &child;
+                return nullptr;
+            }
+            bool ParseFile(const std::filesystem::path& path, ConfigurationNode& root)
             {
-                return false;
+                std::ifstream file(path);
+                if (!file)
+                {
+                    Logf("Configuration file could not be opened: %s", path.string().c_str());
+                    return false;
+                }
+                root = ConfigurationNode{};
+                root.name = "ROOT";
+                std::vector<ConfigurationNode*> stack{&root};
+                std::string line;
+                size_t lineNumber = 0;
+                while (std::getline(file, line))
+                {
+                    ++lineNumber;
+                    if (Trim(line).empty())
+                        continue;
+                    const int depth = IndentDepth(line);
+                    if (depth > static_cast<int>(stack.size()))
+                    {
+                        Logf("Configuration.txt line %zu: indentation skips a level.", lineNumber);
+                        return false;
+                    }
+                    std::string name;
+                    std::string preset;
+                    if (!ParseNode(line, name, preset))
+                        continue;
+                    while (static_cast<int>(stack.size()) > depth + 1)
+                        stack.pop_back();
+                    ConfigurationNode* parent = stack.back();
+                    parent->children.push_back(ConfigurationNode{});
+                    ConfigurationNode& node = parent->children.back();
+                    node.name = std::move(name);
+                    node.preset = std::move(preset);
+                    stack.push_back(&node);
+                }
+                if (root.children.empty())
+                {
+                    Log("Configuration.txt contains no entries.");
+                    return false;
+                }
+                return true;
             }
-            result.presetName = preset;
-            std::filesystem::path presetPath =
-            std::filesystem::current_path() /
-            "forcefields" /
-            preset;
-            if (presetPath.extension().empty())
+            void ApplyPreset(const ConfigurationNode* node, std::string& preset,
+                std::string& source, const std::string& path)
             {
-                presetPath += ".fff";
+                if (!node)
+                    return;
+                if (!node->preset.empty())
+                {
+                    preset = node->preset;
+                    source = path;
+                }
             }
-            result.presetPath =
-            presetPath;
-            result.found = true;
-            return true;
-        }
-    }
-    std::filesystem::path
-    GetConfigurationFilePath()
-    {
-        return std::filesystem::current_path() /
-        "Configuration.txt";
-    }
-    bool LoadConfigurationFile()
-    {
-        const auto path =
-        GetConfigurationFilePath();
-        ConfigurationNode parsed;
-        if (!ParseConfigurationFile(
-            path,
-            parsed))
-        {
-            std::lock_guard<std::mutex> lock(
-                g_configurationMutex);
-            g_configurationRoot =
-            ConfigurationNode{};
-            g_configurationLoaded =
-            false;
-            return false;
-        }
-        {
-            std::lock_guard<std::mutex> lock(
-                g_configurationMutex);
-            g_configurationRoot =
-            std::move(parsed);
-            g_configurationLoaded =
-            true;
-        }
-        Logf(
-            "Configuration loaded: %s",
-            path.string().c_str());
-        return true;
-    }
-    bool ResolveVehicleProfile(
-        const VehicleProfileRequest& request,
-        ResolvedProfile& result)
-    {
-        result = ResolvedProfile{};
-        std::lock_guard<std::mutex> lock(
-            g_configurationMutex);
-        if (!g_configurationLoaded)
-            return false;
-        return ResolveProfileInternal(
-            request,
-            result);
-    }
-    bool LoadResolvedVehicleProfile(
-        const VehicleProfileRequest& request)
-    {
-    /*
-     * Always reload. This is intentional:
-     * Configuration.txt may have been edited while
-     * BeamNG is running.
-     */
-        if (!LoadConfigurationFile())
-        {
-            Log(
-                "Profile resolution aborted: "
-                "Configuration.txt could not be loaded.");
-            return false;
-        }
-        ResolvedProfile profile;
-        if (!ResolveVehicleProfile(
-            request,
-            profile))
-        {
-            Logf(
-                "No configured FFB profile for "
-                "game=\"%s\" type=\"%s\" vehicle=\"%s\" "
-                "configuration=\"%s\".",
-                request.game.c_str(),
-                request.vehicleType.c_str(),
-                request.vehicle.c_str(),
-                request.configuration.c_str());
-            return false;
-        }
-        Logf(
-            "Resolved FFB profile: %s",
-            profile.presetName.c_str());
-        Logf(
-            "Profile source: %s",
-            profile.sourcePath.c_str());
-        if (!std::filesystem::exists(
-            profile.presetPath))
-        {
-            Logf(
-                "Resolved preset does not exist: %s",
-                profile.presetPath.string().c_str());
-            return false;
-        }
-    /*
-     * Loading the .fff replaces the currently loaded
-     * forcefield. The existing preset tracking system
-     * remains responsible for applying its zones.
-     */
-        if (!LoadForceFieldPreset(
-            profile.presetPath))
-        {
-            Logf(
-                "Failed to load resolved preset: %s",
-                profile.presetPath.string().c_str());
-            return false;
-        }
-        Logf(
-            "Vehicle profile active: %s",
-            profile.presetName.c_str());
-        return true;
-    }
+} // namespace
+std::filesystem::path GetApplicationDirectory()
+{
+    wchar_t buffer[32768]{};
+    const DWORD length = GetModuleFileNameW(nullptr, buffer, std::size(buffer));
+    if (length == 0 || length >= std::size(buffer))
+        return std::filesystem::current_path();
+    return std::filesystem::path(buffer).parent_path();
 }
+std::filesystem::path GetConfigurationFilePath()
+{
+    return GetApplicationDirectory() / "Configuration.txt";
+}
+bool LoadConfigurationFile()
+{
+    ConfigurationNode parsed;
+    const auto path = GetConfigurationFilePath();
+    if (!ParseFile(path, parsed))
+    {
+        std::lock_guard<std::mutex> lock(g_configurationMutex);
+        g_configurationRoot = {};
+        g_configurationLoaded = false;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_configurationMutex);
+        g_configurationRoot = std::move(parsed);
+        g_configurationLoaded = true;
+    }
+    Logf("Configuration loaded: %s", path.string().c_str());
+    return true;
+}
+bool ResolveVehicleProfile(const VehicleProfileRequest& request,
+    ResolvedProfile& result)
+{
+    result = {};
+    std::lock_guard<std::mutex> lock(g_configurationMutex);
+    if (!g_configurationLoaded)
+        return false;
+    const ConfigurationNode* profiles = FindChild(g_configurationRoot, "Profiles");
+    const ConfigurationNode* game = profiles ? FindChild(*profiles, request.game) : nullptr;
+    if (!game)
+        return false;
+    std::string preset;
+    std::string source;
+    auto apply = [&](const ConfigurationNode* node, const std::string& path)
+    {
+        ApplyPreset(node, preset, source, path);
+    };
+    apply(game, "Profiles > " + request.game);
+// Vehicle hierarchy establishes the general vehicle fallback.
+// Transmission-specific defaults are then useful for vehicles that do not
+// have a more specific override. Finally, the concrete vehicle/configuration
+// nodes are applied last so they always win.
+    const ConfigurationNode* vehicleCategory = FindChild(*game, "Vehicle");
+    const ConfigurationNode* vehicleType = nullptr;
+    const ConfigurationNode* vehicle = nullptr;
+    std::string vehiclePath;
+    bool vehicleFromType = false;
+    if (vehicleCategory)
+    {
+        apply(vehicleCategory, "Profiles > " + request.game + " > Vehicle");
+        vehicleType = FindChild(*vehicleCategory, request.vehicleType);
+        if (vehicleType)
+            apply(vehicleType, "Profiles > " + request.game + " > Vehicle > " + request.vehicleType);
+        vehicle = vehicleType ? FindChild(*vehicleType, request.vehicle) : nullptr;
+        vehicleFromType = vehicle != nullptr;
+        if (!vehicle && vehicleCategory)
+            vehicle = FindChild(*vehicleCategory, request.vehicle);
+        if (vehicle)
+        {
+            vehiclePath = vehicleFromType
+            ? "Profiles > " + request.game + " > Vehicle > " + request.vehicleType + " > " + request.vehicle
+            : "Profiles > " + request.game + " > Vehicle > " + request.vehicle;
+        }
+    }
+    else
+    {
+// Backward-compatible form: VehicleType directly under the game.
+        vehicleType = FindChild(*game, request.vehicleType);
+        if (vehicleType)
+            apply(vehicleType, "Profiles > " + request.game + " > " + request.vehicleType);
+        vehicle = vehicleType ? FindChild(*vehicleType, request.vehicle) : nullptr;
+        if (vehicle)
+            vehiclePath = "Profiles > " + request.game + " > " + request.vehicleType + " > " + request.vehicle;
+    }
+// Transmission is a sibling category, but vehicle/configuration overrides
+// are deliberately more specific than transmission defaults.
+    const ConfigurationNode* transmissionCategory = FindChild(*game, "Transmission");
+    if (transmissionCategory)
+    {
+// A category-level Transmission preset is a fallback. A concrete
+// transmission preset wins over it.
+        apply(transmissionCategory,
+            "Profiles > " + request.game + " > Transmission");
+        if (!request.transmission.empty())
+        {
+            if (const auto* transmission =
+                FindChild(*transmissionCategory, request.transmission))
+            {
+                apply(transmission,
+                    "Profiles > " + request.game + " > Transmission > " + request.transmission);
+            }
+        }
+    }
+    if (vehicle)
+    {
+        apply(vehicle, vehiclePath);
+        if (!request.configuration.empty())
+        {
+            if (const auto* configuration = FindChild(*vehicle, request.configuration))
+            {
+                apply(configuration, vehiclePath + " > " + request.configuration);
+            }
+        }
+    }
+    if (preset.empty())
+        return false;
+    result.found = true;
+    result.presetName = preset;
+    result.sourcePath = source;
+    result.presetPath = GetApplicationDirectory() / "forcefields" / preset;
+    if (result.presetPath.extension().empty())
+        result.presetPath += ".fff";
+    return true;
+}
+bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request)
+{
+    if (!LoadConfigurationFile())
+        return false;
+    ResolvedProfile profile;
+    if (!ResolveVehicleProfile(request, profile))
+    {
+        Logf("No configured FFB profile for game=\"%s\" type=\"%s\" vehicle=\"%s\" configuration=\"%s\" transmission=\"%s\".",
+            request.game.c_str(), request.vehicleType.c_str(), request.vehicle.c_str(),
+            request.configuration.c_str(), request.transmission.c_str());
+        return false;
+    }
+    if (!std::filesystem::exists(profile.presetPath))
+    {
+        Logf("Resolved preset does not exist: %s", profile.presetPath.string().c_str());
+        return false;
+    }
+    Logf("Resolved FFB profile: %s", profile.presetName.c_str());
+    Logf("Profile source: %s", profile.sourcePath.c_str());
+    ClearForceFieldPreset();
+    if (!LoadForceFieldPreset(profile.presetPath))
+        return false;
+    StartPresetTest();
+    return true;
+}
+} // namespace MultiFFBJoy

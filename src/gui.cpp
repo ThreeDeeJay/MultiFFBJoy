@@ -1,661 +1,248 @@
 #include "common.h"
-#include <commctrl.h>
-#include <filesystem>
 namespace MultiFFBJoy
 {
     HWND g_mainWindow = nullptr;
     HWND g_statusWindow = nullptr;
     HWND g_logWindow = nullptr;
-// ---------------------------------------------------------------------
-// UTF-8 -> UTF-16
-// ---------------------------------------------------------------------
-    std::wstring Utf8ToWide(
-        const char* text)
+    std::wstring Utf8ToWide(const char* text)
     {
-        if (text == nullptr)
+        if (!text)
             return {};
-        const int required =
-        MultiByteToWideChar(
-            CP_UTF8,
-            0,
-            text,
-            -1,
-            nullptr,
-            0);
+        const int required = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
         if (required <= 0)
             return {};
-        std::wstring result(
-            static_cast<size_t>(required - 1),
-            L'\0');
-        MultiByteToWideChar(
-            CP_UTF8,
-            0,
-            text,
-            -1,
-            result.data(),
-            required);
+        std::wstring result(static_cast<size_t>(required), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, text, -1, result.data(), required);
+        result.resize(static_cast<size_t>(required - 1));
         return result;
     }
-// ---------------------------------------------------------------------
-// Logging
-// ---------------------------------------------------------------------
-    void Log(
-        const std::string& text)
+    void Log(const std::string& text)
     {
-        auto* message =
-        new std::wstring(
-            Utf8ToWide(
-                text.c_str()));
-        if (g_mainWindow != nullptr)
-        {
-            PostMessageW(
-                g_mainWindow,
-                WM_APP_LOG,
-                0,
-                reinterpret_cast<LPARAM>(
-                    message));
-        }
-        else
-        {
+        auto* message = new std::wstring(Utf8ToWide(text.c_str()));
+        HWND window = g_mainWindow;
+        if (!window || !PostMessageW(window, WM_APP_LOG, 0,
+            reinterpret_cast<LPARAM>(message)))
             delete message;
-        }
     }
-// ---------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------
-    void UpdateStatus()
+    static void RefreshStatusWindow()
     {
-        if (g_statusWindow == nullptr)
+        if (!g_statusWindow)
             return;
         DeviceState state;
         {
-            std::lock_guard<std::mutex> lock(
-                g_stateMutex);
+            std::lock_guard<std::mutex> lock(g_stateMutex);
             state = g_state;
         }
         wchar_t text[4096]{};
-        swprintf_s(
-            text,
+        swprintf_s(text, std::size(text),
             L"Selected device: %ls\r\n"
             L"Axes: %lu\r\n"
             L"Force Feedback: %s\r\n"
             L"Spring effect: %s\r\n"
             L"Acquired: %s\r\n"
-            L"Logical X axis: 0x%lX\r\n"
-            L"Logical Y axis: 0x%lX\r\n"
             L"Spring strength: %.3f\r\n"
             L"UDP: 127.0.0.1:%d\r\n"
             L"FFB safety timeout: %lu ms",
-            state.name.c_str(),
-            state.axisCount,
-            state.forceFeedback
-            ? L"Yes"
-            : L"No",
-            state.springSupported
-            ? L"Yes"
-            : L"No",
-            state.acquired
-            ? L"Yes"
-            : L"No",
-            static_cast<unsigned long>(
-                state.xAxisOffset),
-            static_cast<unsigned long>(
-                state.yAxisOffset),
-            state.springStrength,
-            UDP_PORT,
-            COMMAND_TIMEOUT_MS);
-        SetWindowTextW(
-            g_statusWindow,
-            text);
+            state.name.c_str(), state.axisCount,
+            state.forceFeedback ? L"Yes" : L"No",
+            state.springSupported ? L"Yes" : L"No",
+            state.acquired ? L"Yes" : L"No",
+            state.springStrength, UDP_PORT, COMMAND_TIMEOUT_MS);
+        SetWindowTextW(g_statusWindow, text);
     }
-// ---------------------------------------------------------------------
-// GUI helpers
-// ---------------------------------------------------------------------
-    static HMENU MakeControlId(
-        int id)
+    void UpdateStatus()
     {
-        return reinterpret_cast<HMENU>(
-            static_cast<INT_PTR>(id));
+        HWND window = g_mainWindow;
+        if (window)
+            PostMessageW(window, WM_APP_STATUS, 0, 0);
     }
-// ---------------------------------------------------------------------
-// Preset list
-// ---------------------------------------------------------------------
+    static HMENU ControlId(int id)
+    {
+        return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
+    }
     void PopulatePresetList()
     {
-        if (g_mainWindow == nullptr)
+        if (!g_mainWindow)
             return;
-        HWND list =
-        GetDlgItem(
-            g_mainWindow,
-            IDC_PRESET_LIST);
-        if (list == nullptr)
+        HWND list = GetDlgItem(g_mainWindow, IDC_PRESET_LIST);
+        if (!list)
             return;
-        SendMessageW(
-            list,
-            LB_RESETCONTENT,
-            0,
-            0);
-        const std::vector<std::filesystem::path> paths =
-        EnumerateForceFieldPresets();
+        SendMessageW(list, LB_RESETCONTENT, 0, 0);
+        const auto paths = EnumerateForceFieldPresets();
         g_availablePresets.clear();
         g_availablePresets.reserve(paths.size());
         for (const auto& path : paths)
         {
-            PresetInfo info;
-            info.path = path;
-            info.displayName = path.filename().wstring();
+            PresetInfo info{path, path.filename().wstring()};
             g_availablePresets.push_back(info);
-            SendMessageW(
-                list,
-                LB_ADDSTRING,
-                0,
-                reinterpret_cast<LPARAM>(
-                    info.displayName.c_str()));
+            SendMessageW(list, LB_ADDSTRING, 0,
+                reinterpret_cast<LPARAM>(info.displayName.c_str()));
         }
-        Logf(
-            "Found %zu forcefield preset(s).",
-            g_availablePresets.size());
+        Logf("Found %zu forcefield preset(s).", g_availablePresets.size());
     }
-// ---------------------------------------------------------------------
-// Window procedure
-// ---------------------------------------------------------------------
-    static LRESULT CALLBACK WindowProcedure(
-        HWND window,
-        UINT messageId,
-        WPARAM wParam,
-        LPARAM lParam)
+    static LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
+        WPARAM wParam, LPARAM lParam)
     {
-        switch (messageId)
+        switch (message)
         {
         case WM_CREATE:
             {
-                g_statusWindow =
+                g_statusWindow = CreateWindowExW(
+                    WS_EX_CLIENTEDGE, L"STATIC", L"Initializing...",
+                    WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    12, 12, 390, 120, window, nullptr, GetModuleHandleW(nullptr), nullptr);
+                g_logWindow = CreateWindowExW(
+                    WS_EX_CLIENTEDGE, L"EDIT", L"",
+                    WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+                    ES_AUTOVSCROLL | ES_READONLY,
+                    12, 240, 720, 300, window, nullptr,
+                    GetModuleHandleW(nullptr), nullptr);
+                struct ButtonSpec { int id; const wchar_t* text; int x; int y; };
+                const ButtonSpec buttons[] = {
+                    {IDC_FFB_UP, L"FFB Up", 420, 12},
+                    {IDC_FFB_DOWN, L"FFB Down", 530, 12},
+                    {IDC_FFB_LEFT, L"FFB Left", 420, 52},
+                    {IDC_FFB_RIGHT, L"FFB Right", 530, 52},
+                    {IDC_FFB_STOP, L"Stop", 420, 92},
+                    {IDC_FFB_CENTER, L"Center", 530, 92},
+                    {IDC_PRND_TEST, L"PRND Test", 500, 135},
+                    {IDC_PRND_PARK, L"PRND Park", 610, 135},
+                    {IDC_PRND_REVERSE, L"PRND Reverse", 500, 170},
+                    {IDC_PRND_NEUTRAL, L"PRND Neutral", 610, 170},
+                    {IDC_PRND_DRIVE, L"PRND Drive", 500, 205},
+                };
+                for (const auto& button : buttons)
+                {
+                    CreateWindowW(L"BUTTON", button.text, WS_CHILD | WS_VISIBLE,
+                        button.x, button.y, 100, 28, window,
+                        ControlId(button.id), GetModuleHandleW(nullptr), nullptr);
+                }
                 CreateWindowExW(
-                    WS_EX_CLIENTEDGE,
-                    L"STATIC",
-                    L"Initializing...",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    SS_LEFT,
-                    12,
-                    12,
-                    400,
-                    190,
-                    window,
-                    nullptr,
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                g_logWindow =
-                CreateWindowExW(
-                    WS_EX_CLIENTEDGE,
-                    L"EDIT",
-                    L"",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    WS_VSCROLL |
-                    ES_MULTILINE |
-                    ES_AUTOVSCROLL |
-                    ES_READONLY,
-                    12,
-                    230,
-                    720,
-                    280,
-                    window,
-                    nullptr,
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"FFB Up",
-                    WS_CHILD | WS_VISIBLE,
-                    430,
-                    12,
-                    100,
-                    32,
-                    window,
-                    MakeControlId(IDC_FFB_UP),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"FFB Down",
-                    WS_CHILD | WS_VISIBLE,
-                    540,
-                    12,
-                    100,
-                    32,
-                    window,
-                    MakeControlId(IDC_FFB_DOWN),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"FFB Left",
-                    WS_CHILD | WS_VISIBLE,
-                    430,
-                    52,
-                    100,
-                    32,
-                    window,
-                    MakeControlId(IDC_FFB_LEFT),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"FFB Right",
-                    WS_CHILD | WS_VISIBLE,
-                    540,
-                    52,
-                    100,
-                    32,
-                    window,
-                    MakeControlId(IDC_FFB_RIGHT),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"Stop",
-                    WS_CHILD | WS_VISIBLE,
-                    430,
-                    92,
-                    100,
-                    32,
-                    window,
-                    MakeControlId(IDC_FFB_STOP),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"Center",
-                    WS_CHILD | WS_VISIBLE,
-                    540,
-                    92,
-                    100,
-                    32,
-                    window,
-                    MakeControlId(IDC_FFB_CENTER),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"PRND Test",
-                    WS_CHILD | WS_VISIBLE,
-                    500,
-                    135,
-                    100,
-                    28,
-                    window,
-                    MakeControlId(IDC_PRND_TEST),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"PRND Park",
-                    WS_CHILD | WS_VISIBLE,
-                    610,
-                    135,
-                    100,
-                    28,
-                    window,
-                    MakeControlId(IDC_PRND_PARK),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"PRND Reverse",
-                    WS_CHILD | WS_VISIBLE,
-                    500,
-                    170,
-                    100,
-                    28,
-                    window,
-                    MakeControlId(IDC_PRND_REVERSE),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"PRND Neutral",
-                    WS_CHILD | WS_VISIBLE,
-                    610,
-                    170,
-                    100,
-                    28,
-                    window,
-                    MakeControlId(IDC_PRND_NEUTRAL),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowW(
-                    L"BUTTON",
-                    L"PRND Drive",
-                    WS_CHILD | WS_VISIBLE,
-                    500,
-                    205,
-                    100,
-                    28,
-                    window,
-                    MakeControlId(IDC_PRND_DRIVE),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"LISTBOX",
-                    nullptr,
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    WS_BORDER |
-                    LBS_NOTIFY |
-                    WS_VSCROLL,
-                    10,
-                    135,
-                    390,
-                    90,
-                    window,
-                    MakeControlId(IDC_PRESET_LIST),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                CreateWindowExW(
-                    0,
-                    L"BUTTON",
-                    L"Load",
-                    WS_CHILD |
-                    WS_VISIBLE |
-                    BS_PUSHBUTTON,
-                    410,
-                    135,
-                    80,
-                    28,
-                    window,
-                    MakeControlId(IDC_PRESET_LOAD),
-                    GetModuleHandleW(nullptr),
-                    nullptr);
-                UpdateStatus();
+                    0, L"LISTBOX", nullptr,
+                    WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY | WS_VSCROLL,
+                    10, 135, 390, 90, window, ControlId(IDC_PRESET_LIST),
+                    GetModuleHandleW(nullptr), nullptr);
+                CreateWindowW(L"BUTTON", L"Load", WS_CHILD | WS_VISIBLE,
+                    410, 135, 80, 28, window, ControlId(IDC_PRESET_LOAD),
+                    GetModuleHandleW(nullptr), nullptr);
+                RefreshStatusWindow();
                 return 0;
             }
         case WM_SIZE:
             {
-                const int width =
-                LOWORD(lParam);
-                const int height =
-                HIWORD(lParam);
-                if (g_statusWindow != nullptr)
-                {
-                    MoveWindow(
-                        g_statusWindow,
-                        12,
-                        12,
-                        std::max(
-                            100,
-                            width - 380),
-                        110,
-                        TRUE);
-                }
-                if (g_logWindow != nullptr)
-                {
-                    MoveWindow(
-                        g_logWindow,
-                        12,
-                        240,
-                        std::max(
-                            100,
-                            width - 24),
-                        std::max(
-                            100,
-                            height - 270),
-                        TRUE);
-                }
+                const int width = LOWORD(lParam);
+                const int height = HIWORD(lParam);
+                if (g_statusWindow)
+                    MoveWindow(g_statusWindow, 12, 12, std::max(100, width - 380), 110, TRUE);
+                if (g_logWindow)
+                    MoveWindow(g_logWindow, 12, 240, std::max(100, width - 24),
+                        std::max(100, height - 270), TRUE);
                 return 0;
             }
         case WM_COMMAND:
             {
-                const int controlId =
-                LOWORD(wParam);
-                const int notificationCode =
-                HIWORD(wParam);
-                if (notificationCode != BN_CLICKED)
+                if (HIWORD(wParam) != BN_CLICKED)
                     break;
-                switch (controlId)
+                switch (LOWORD(wParam))
                 {
-                case IDC_FFB_UP:
-                    SendUdpCommand(
-                        "TEST_FFB 0 10000");
-                    return 0;
-                case IDC_FFB_DOWN:
-                    SendUdpCommand(
-                        "TEST_FFB 0 -10000");
-                    return 0;
-                case IDC_FFB_LEFT:
-                    SendUdpCommand(
-                        "TEST_FFB 10000 0");
-                    return 0;
-                case IDC_FFB_RIGHT:
-                    SendUdpCommand(
-                        "TEST_FFB -10000 0");
-                    return 0;
-                case IDC_FFB_STOP:
-                    {
-                        Log("GUI: STOP");
-                        ClearForceFieldPreset();
-                        return 0;
-                    }
-                case IDC_FFB_CENTER:
-                    SendUdpCommand("CENTER");
-                    return 0;
-                case IDC_PRND_TEST:
-                    {
-                        Log("GUI: hard-coded PRND test.");
-                        StartHardCodedPRNDTest();
-                        return 0;
-                    }
-                case IDC_PRND_PARK:
-                    {
-                        Log("GUI: hard-coded PRND Park.");
-                        ApplyHardCodedPRNDZone(0);
-                        return 0;
-                    }
-                case IDC_PRND_REVERSE:
-                    {
-                        Log("GUI: hard-coded PRND Reverse.");
-                        ApplyHardCodedPRNDZone(1);
-                        return 0;
-                    }
-                case IDC_PRND_NEUTRAL:
-                    {
-                        Log("GUI: hard-coded PRND Neutral.");
-                        ApplyHardCodedPRNDZone(2);
-                        return 0;
-                    }
-                case IDC_PRND_DRIVE:
-                    {
-                        Log("GUI: hard-coded PRND Drive.");
-                        ApplyHardCodedPRNDZone(3);
-                        return 0;
-                    }
+                case IDC_FFB_UP: SendUdpCommand("TEST_FFB 0 10000"); return 0;
+                case IDC_FFB_DOWN: SendUdpCommand("TEST_FFB 0 -10000"); return 0;
+                case IDC_FFB_LEFT: SendUdpCommand("TEST_FFB 10000 0"); return 0;
+                case IDC_FFB_RIGHT: SendUdpCommand("TEST_FFB -10000 0"); return 0;
+                case IDC_FFB_STOP: ClearForceFieldPreset(); return 0;
+                case IDC_FFB_CENTER: SendUdpCommand("CENTER"); return 0;
+                case IDC_PRND_TEST: StartHardCodedPRNDTest(); return 0;
+                case IDC_PRND_PARK: ApplyHardCodedPRNDZone(0); return 0;
+                case IDC_PRND_REVERSE: ApplyHardCodedPRNDZone(1); return 0;
+                case IDC_PRND_NEUTRAL: ApplyHardCodedPRNDZone(2); return 0;
+                case IDC_PRND_DRIVE: ApplyHardCodedPRNDZone(3); return 0;
                 case IDC_PRESET_LOAD:
                     {
-                        HWND list =
-                        GetDlgItem(
-                            window,
-                            IDC_PRESET_LIST);
-                        if (list == nullptr)
+                        HWND list = GetDlgItem(window, IDC_PRESET_LIST);
+                        if (!list) return 0;
+                        const LRESULT selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
+                        if (selected == LB_ERR || static_cast<size_t>(selected) >= g_availablePresets.size())
                             return 0;
-                        const LRESULT selection =
-                        SendMessageW(
-                            list,
-                            LB_GETCURSEL,
-                            0,
-                            0);
-                        if (selection == LB_ERR)
-                        {
-                            Log(
-                                "No forcefield preset selected.");
-                            return 0;
-                        }
-                        const size_t index =
-                        static_cast<size_t>(
-                            selection);
-                        if (index >=
-                            g_availablePresets.size())
-                        {
-                            Log(
-                                "Invalid forcefield preset selection.");
-                            return 0;
-                        }
-                        const auto& preset =
-                        g_availablePresets[index];
-                        Logf(
-                            "Loading forcefield preset: %ls",
-                            preset.displayName.c_str());
-                        if (LoadForceFieldPreset(
-                            preset.path))
-                        {
-                            Log(
-                                "Forcefield preset loaded.");
+                        const auto preset = g_availablePresets[static_cast<size_t>(selected)];
+                        if (LoadForceFieldPreset(preset.path))
                             StartPresetTest();
-                        }
                         return 0;
                     }
-                default:
-                    break;
+                default: break;
                 }
                 break;
             }
         case WM_APP_LOG:
             {
-                auto* logMessage =
-                reinterpret_cast<std::wstring*>(
-                    lParam);
-                if (logMessage != nullptr)
+                auto* messageText = reinterpret_cast<std::wstring*>(lParam);
+                if (!messageText)
+                    return 0;
+                if (g_logWindow)
                 {
-                    if (g_logWindow != nullptr)
-                    {
-                        const int length =
-                        GetWindowTextLengthW(
-                            g_logWindow);
-                        SendMessageW(
-                            g_logWindow,
-                            EM_SETSEL,
-                            static_cast<WPARAM>(
-                                length),
-                            static_cast<LPARAM>(
-                                length));
-                        const std::wstring line =
-                        *logMessage + L"\r\n";
-                        SendMessageW(
-                            g_logWindow,
-                            EM_REPLACESEL,
-                            FALSE,
-                            reinterpret_cast<LPARAM>(
-                                line.c_str()));
-                        SendMessageW(
-                            g_logWindow,
-                            EM_SCROLL,
-                            SB_BOTTOM,
-                            0);
-                    }
-                    delete logMessage;
+                    const int length = GetWindowTextLengthW(g_logWindow);
+                    SendMessageW(g_logWindow, EM_SETSEL, length, length);
+                    const std::wstring line = *messageText + L"\r\n";
+                    SendMessageW(g_logWindow, EM_REPLACESEL, FALSE,
+                        reinterpret_cast<LPARAM>(line.c_str()));
+                    SendMessageW(g_logWindow, EM_SCROLL, SB_BOTTOM, 0);
                 }
+                delete messageText;
                 return 0;
             }
+        case WM_APP_STATUS:
+            RefreshStatusWindow();
+            return 0;
         case WM_DESTROY:
+            g_mainWindow = nullptr;
             PostQuitMessage(0);
             return 0;
         default:
             break;
         }
-        return DefWindowProcW(
-            window,
-            messageId,
-            wParam,
-            lParam);
+        return DefWindowProcW(window, message, wParam, lParam);
     }
-// ---------------------------------------------------------------------
-// Main window creation
-// ---------------------------------------------------------------------
-    bool CreateMainWindow(
-        HINSTANCE instance,
-        int showCommand)
+    bool CreateMainWindow(HINSTANCE instance, int showCommand)
     {
-        WNDCLASSW windowClass{};
-        windowClass.hInstance =
-        instance;
-        windowClass.lpfnWndProc =
-        WindowProcedure;
-        windowClass.lpszClassName =
-        L"MultiFFBJoyWindow";
-        windowClass.hCursor =
-        LoadCursorW(
-            nullptr,
-            IDC_ARROW);
-        windowClass.hbrBackground =
-        reinterpret_cast<HBRUSH>(
-            COLOR_WINDOW + 1);
-        if (!RegisterClassW(
-            &windowClass))
+        WNDCLASSW wc{};
+        wc.hInstance = instance;
+        wc.lpfnWndProc = WindowProcedure;
+        wc.lpszClassName = L"MultiFFBJoyWindow";
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         {
-            Logf(
-                "RegisterClassW failed: %lu",
-                GetLastError());
+            Logf("RegisterClassW failed: %lu", GetLastError());
             return false;
         }
-        g_mainWindow =
-        CreateWindowW(
-            windowClass.lpszClassName,
-            L"MultiFFBJoy - DirectInput FFB Bridge",
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            760,
-            600,
-            nullptr,
-            nullptr,
-            instance,
-            nullptr);
-        if (g_mainWindow == nullptr)
+        g_mainWindow = CreateWindowW(
+            wc.lpszClassName, L"MultiFFBJoy - DirectInput FFB Bridge",
+            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 760, 600,
+            nullptr, nullptr, instance, nullptr);
+        if (!g_mainWindow)
         {
-            Logf(
-                "CreateWindowW failed: %lu",
-                GetLastError());
+            Logf("CreateWindowW failed: %lu", GetLastError());
             return false;
         }
-        ShowWindow(
-            g_mainWindow,
-            showCommand);
-        UpdateWindow(
-            g_mainWindow);
+        ShowWindow(g_mainWindow, showCommand);
+        UpdateWindow(g_mainWindow);
         return true;
     }
-// ---------------------------------------------------------------------
-// Message loop
-// ---------------------------------------------------------------------
     int RunMessageLoop()
     {
-        MSG winMessage{};
-        while (GetMessageW(
-            &winMessage,
-            nullptr,
-            0,
-            0) > 0)
+        MSG message{};
+        while (GetMessageW(&message, nullptr, 0, 0) > 0)
         {
-            TranslateMessage(
-                &winMessage);
-            DispatchMessageW(
-                &winMessage);
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
         }
-        return static_cast<int>(
-            winMessage.wParam);
+        return static_cast<int>(message.wParam);
     }
-// ---------------------------------------------------------------------
-// Window destruction
-// ---------------------------------------------------------------------
     void DestroyMainWindow()
     {
-        if (g_mainWindow != nullptr)
-        {
-            DestroyWindow(
-                g_mainWindow);
-            g_mainWindow = nullptr;
-        }
+        if (g_mainWindow)
+            DestroyWindow(g_mainWindow);
+        g_mainWindow = nullptr;
         g_statusWindow = nullptr;
         g_logWindow = nullptr;
     }
-}
+} // namespace MultiFFBJoy
