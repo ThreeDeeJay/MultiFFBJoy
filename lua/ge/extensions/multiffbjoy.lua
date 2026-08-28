@@ -9,6 +9,7 @@ local initialized = false
 local currentVehicleId = nil
 local currentVehicleCode = nil
 local currentConfigurationCode = nil
+local currentPartConfig = nil
 local lastReacquireTime = -1000
 local REACQUIRE_COOLDOWN = 1.0
 local metadataTimer = 0
@@ -245,6 +246,36 @@ local function queueVehicleMetadataDiagnostic(vehicleId, reason, resetRetries)
   end
 
   metadataPendingVehicleId = vehicleId
+
+  -- Capture identity from the GE vehicle object before asking VLUA for
+  -- powertrain metadata. These fields are known to work for BeamNG vehicles.
+  local partConfig = safeToString((function()
+    local ok, value = pcall(function()
+      return vehicle.partConfig
+    end)
+    return ok and value or nil
+  end)())
+  local jBeam = safeToString((function()
+    local ok, value = pcall(function()
+      return vehicle.JBeam or vehicle.jBeam
+    end)
+    return ok and value or nil
+  end)())
+
+  if partConfig ~= "" then
+    currentPartConfig = partConfig
+  end
+  if jBeam ~= "" then
+    currentVehicleCode = jBeam
+  end
+  if currentConfigurationCode == nil or currentConfigurationCode == "" then
+    local normalized = partConfig:gsub("\\", "/")
+    local _, parsedConfiguration = normalized:match("vehicles/([^/]+)/([^/]+)%.pc$")
+    if parsedConfiguration ~= nil and parsedConfiguration ~= "" then
+      currentConfigurationCode = parsedConfiguration
+    end
+  end
+
   if resetRetries ~= false then
     metadataRetriesLeft = METADATA_RETRY_COUNT
     metadataTimer = METADATA_RETRY_INTERVAL
@@ -279,6 +310,7 @@ local function handleVehicleChange(vehicleId, reason)
   currentVehicleId = vehicleId
   currentVehicleCode = nil
   currentConfigurationCode = nil
+  currentPartConfig = nil
 
   if vehicleId == nil or vehicleId < 0 then
     metadataPendingVehicleId = nil
@@ -352,6 +384,23 @@ function M.receiveVehicleMetadata(metadata)
 
   metadata.vehicle = safeToString(metadata.vehicle)
   metadata.configuration = safeToString(metadata.configuration)
+
+  -- VLUA powertrain data is authoritative for transmission, but the vehicle
+  -- VM does not reliably expose identity fields. Keep the GE-side identity
+  -- (JBeam + partConfig) as a fallback so a valid vehicle request is always
+  -- sent even when VLUA returns blank vehicle/configuration fields.
+  if metadata.vehicle == "" and currentVehicleCode ~= nil then
+    metadata.vehicle = currentVehicleCode
+    log("VLUA did not return vehicle codename; using GE fallback: " .. metadata.vehicle)
+  end
+  if metadata.configuration == "" and currentConfigurationCode ~= nil then
+    metadata.configuration = currentConfigurationCode
+    log("VLUA did not return configuration codename; using GE fallback: " .. metadata.configuration)
+  end
+  if safeToString(metadata.partConfig) == "" and currentPartConfig ~= nil then
+    metadata.partConfig = currentPartConfig
+  end
+
   metadata.vehicleType = normalizeVehicleType(metadata.vehicleType)
   metadata.transmission = normalizeTransmission(metadata.transmission, metadata.transmissionRaw)
   metadata.gearLayout = normalizeGearLayout(metadata.gearLayout)
@@ -419,6 +468,7 @@ local function onExtensionUnloaded()
   currentVehicleId = nil
   currentVehicleCode = nil
   currentConfigurationCode = nil
+  currentPartConfig = nil
   metadataPendingVehicleId = nil
   metadataRetriesLeft = 0
 

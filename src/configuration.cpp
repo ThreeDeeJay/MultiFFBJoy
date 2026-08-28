@@ -200,6 +200,27 @@ bool LoadConfigurationFile()
 {
     ConfigurationNode parsed;
     const auto path = GetConfigurationFilePath();
+
+    // Log the exact file path and its raw contents. This makes it unambiguous
+    // which Configuration.txt the helper is using, regardless of its current
+    // working directory.
+    {
+        std::ifstream debugFile(path);
+        if (debugFile)
+        {
+            Logf("Configuration.txt path: %s", path.string().c_str());
+            Log("Configuration.txt contents begin:");
+            std::string debugLine;
+            while (std::getline(debugFile, debugLine))
+                Log(debugLine);
+            Log("Configuration.txt contents end.");
+        }
+        else
+        {
+            Logf("Configuration.txt not found/openable at: %s", path.string().c_str());
+        }
+    }
+
     if (!ParseFile(path, parsed))
     {
         std::lock_guard<std::mutex> lock(g_configurationMutex);
