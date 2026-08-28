@@ -14,6 +14,7 @@ namespace MultiFFBJoy
         std::mutex g_configurationMutex;
         ConfigurationNode g_configurationRoot;
         bool g_configurationLoaded = false;
+        std::filesystem::file_time_type g_configurationFileTime{};
         std::string Trim(const std::string& value)
         {
             const size_t first = value.find_first_not_of(" \t\r\n");
