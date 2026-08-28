@@ -276,6 +276,20 @@ bool GearMatchesField(const ForceField& field, const VehicleState& state)
     if (gear == "R" && name == "REVERSE") return true;
     if (gear == "N" && name == "NEUTRAL") return true;
     if (gear == "D" && name == "DRIVE") return true;
+
+    // Some BeamNG vehicle states expose the shifter mode (for example
+    // "neutral" / "drive") before the public gear string is populated.
+    // Use that documented transmission state as a fallback so the preset
+    // still has a valid detent immediately after loading.
+    const std::string mode = NormalizeGearToken(state.gearboxMode);
+    if (gear.empty())
+    {
+        if (mode == "PARK" && name == "PARK") return true;
+        if (mode == "REVERSE" && name == "REVERSE") return true;
+        if (mode == "NEUTRAL" && name == "NEUTRAL") return true;
+        if (mode == "DRIVE" && name == "DRIVE") return true;
+        if (mode == "LOW" && (name == "LOW" || name == "1")) return true;
+    }
     if ((gear == "1" || gear == "L" || gear == "LOW") &&
         (name == "1" || name == "LOW" || name == "FIRST" || name == "FIRSTGEAR")) return true;
     if ((gear == "2" || gear == "2ND" || gear == "SECOND") &&

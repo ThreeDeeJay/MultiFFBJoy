@@ -108,22 +108,56 @@ end
 
 local function getGearState(gearbox)
   local values = electrics and electrics.values or nil
+  local mainController = nil
+
+  -- BeamNG's documented gear API belongs to the active vehicle-controller /
+  -- shift-logic controller, not to the powertrain gearbox device itself.
+  -- In particular, vehicleController exposes getGearName(), getGearPosition()
+  -- and currentGearIndex.  The electrics values are also authoritative and
+  -- are useful as a fallback.
+  if controller ~= nil then
+    mainController = safeValue(controller, "mainController")
+  end
+
   local gear = firstNonEmpty(
-    safeValue(values, "gear"), safeCall(gearbox, "getGearName"),
-    safeValue(gearbox, "gear"), safeValue(gearbox, "currentGear")
+    safeCall(mainController, "getGearName"),
+    safeValue(mainController, "gear"),
+    safeValue(mainController, "currentGear"),
+    safeValue(values, "gear"),
+    safeCall(gearbox, "getGearName"),
+    safeValue(gearbox, "gear"),
+    safeValue(gearbox, "currentGear")
   )
+
   local gearIndex = firstNonEmpty(
-    safeValue(values, "gearIndex"), safeValue(gearbox, "currentGearIndex"),
+    safeValue(mainController, "currentGearIndex"),
+    safeValue(mainController, "gearIndex"),
+    safeCall(mainController, "getGearIndex"),
+    safeValue(values, "gearIndex"),
+    safeValue(gearbox, "currentGearIndex"),
+    safeValue(gearbox, "gearIndex"),
     safeCall(gearbox, "getGearIndex")
   )
+
   local gearboxMode = firstNonEmpty(
-    safeValue(values, "gearboxMode"), safeCall(gearbox, "getGearMode"),
-    safeValue(gearbox, "gearboxMode"), safeValue(gearbox, "mode")
+    safeValue(mainController, "gearboxMode"),
+    safeValue(mainController, "mode"),
+    safeCall(mainController, "getGearboxMode"),
+    safeValue(values, "gearboxMode"),
+    safeValue(gearbox, "gearboxMode"),
+    safeValue(gearbox, "mode")
   )
+
   local gearPosition = firstNonEmpty(
-    safeValue(values, "gear_A"), safeCall(gearbox, "getGearPosition"),
-    safeValue(gearbox, "gearPosition"), safeValue(gearbox, "currentGearPosition")
+    safeCall(mainController, "getGearPosition"),
+    safeValue(mainController, "gearPosition"),
+    safeValue(mainController, "currentGearPosition"),
+    safeValue(values, "gear_A"),
+    safeCall(gearbox, "getGearPosition"),
+    safeValue(gearbox, "gearPosition"),
+    safeValue(gearbox, "currentGearPosition")
   )
+
   return stringify(gear), stringify(gearIndex), stringify(gearboxMode), stringify(gearPosition)
 end
 
@@ -192,6 +226,10 @@ local function buildMetadata()
   local gearboxGearName = stringify(safeCall(gearbox, "getGearName"))
   local gearboxGearPosition = stringify(safeCall(gearbox, "getGearPosition"))
   local gearboxCurrentGearIndex = stringify(safeValue(gearbox, "currentGearIndex"))
+  local mainController = controller and safeValue(controller, "mainController") or nil
+  local controllerGearName = stringify(safeCall(mainController, "getGearName"))
+  local controllerGearPosition = stringify(safeCall(mainController, "getGearPosition"))
+  local controllerGearIndex = stringify(safeValue(mainController, "currentGearIndex"))
   local electricsGear = stringify(safeValue(values, "gear"))
   local electricsGearIndex = stringify(safeValue(values, "gearIndex"))
   local electricsGearA = stringify(safeValue(values, "gear_A"))
@@ -217,7 +255,10 @@ local function buildMetadata()
       .. "; electrics.gear_A=" .. electricsGearA
       .. "; gearbox.getGearName=" .. gearboxGearName
       .. "; gearbox.getGearPosition=" .. gearboxGearPosition
-      .. "; gearbox.currentGearIndex=" .. gearboxCurrentGearIndex,
+      .. "; gearbox.currentGearIndex=" .. gearboxCurrentGearIndex
+      .. "; controller.getGearName=" .. controllerGearName
+      .. "; controller.getGearPosition=" .. controllerGearPosition
+      .. "; controller.currentGearIndex=" .. controllerGearIndex,
   }
 end
 
