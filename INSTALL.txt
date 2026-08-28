@@ -1,0 +1,19 @@
+MultiFFBJoy update
+
+Helper:
+- Build the files under src/ with the existing Visual Studio project/settings.
+- Put Configuration.txt next to MultiFFBJoy.exe.
+- Put the forcefields directory next to MultiFFBJoy.exe.
+- The helper owns UDP port 65458 and now enforces a single running instance.
+
+BeamNG mod:
+- Put lua/ge/extensions/multiffbjoy.lua at:
+  lua/ge/extensions/multiffbjoy.lua
+- Put lua/vehicle/extensions/multiffbjoy.lua at:
+  lua/vehicle/extensions/multiffbjoy.lua
+- Keep the GE extension enabled as before.
+- The GE extension loads the VLUA extension on the active player vehicle and asks it for metadata.
+
+Important:
+- Close any old MultiFFBJoy.exe before starting the updated helper. Older builds did not use the new single-instance mutex.
+- Configuration.txt remains next to MultiFFBJoy.exe; it is not expected in the BeamNG game folder.

@@ -51,8 +51,7 @@ Node names may be quoted. Quoted names are matched case-insensitively, while
 quotes are treated as syntax rather than part of the key. This permits either
 language-specific names or BeamNG internal codenames.
 
-Preset paths are resolved relative to the executable directory, not the
-process working directory.
+`Configuration.txt` and `forcefields\*.fff` are resolved relative to the helper executable directory, not the game directory or process working directory. The helper logs the exact configuration path at startup. A single helper instance owns UDP port 65458.
 
 ## UDP commands
 
@@ -63,6 +62,7 @@ process working directory.
 - `CENTER`
 - `SPRING <0..1>`
 - `TEST_FFB <x> <y>`
+- `VEHICLE|<game>|<vehicleType>|<vehicle>|<configuration>|<transmission>|<gearLayout>` — reloads `Configuration.txt`, resolves the most-specific matching profile, and activates the resulting preset.
 
 ## Safety / concurrency changes
 

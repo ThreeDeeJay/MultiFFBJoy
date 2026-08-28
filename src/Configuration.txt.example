@@ -1,0 +1,16 @@
+# MultiFFBJoy profile hierarchy.
+# Use tabs for indentation.
+# Node names may be quoted; unquoted names are matched case-insensitively.
+# A preset on a parent is inherited until a more specific node overrides it.
+
+Profiles
+	BeamNG.drive
+		Vehicle
+			Car=PRND
+				miramar=PRND21
+					base=5RDR
+					luxe_A=PRNDL
+			Aircraft=Flightstick
+		Transmission
+			Automatic=PRND
+			Manual=5RDR
