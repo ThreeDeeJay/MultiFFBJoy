@@ -339,10 +339,10 @@ void ApplyVehicleState(const VehicleState& state)
         Logf("Failed to apply vehicle-state forcefield \"%s\".", selected.name.c_str());
 }
 
-void ClearVehicleState()
+void ResetVehicleState()
 {
-    g_vehicleStateValid = false;
-    std::lock_guard<std::mutex> lock(g_presetMutex);
+    g_vehicleStateValid.store(false, std::memory_order_release);
+    std::lock_guard<std::mutex> stateLock(g_presetMutex);
     g_vehicleState = VehicleState{};
 }
 
@@ -513,7 +513,7 @@ void UpdatePresetTest()
 
 void StartPresetTest()
 {
-    ClearVehicleState();
+    ResetVehicleState();
     if (!IsForceFieldPresetLoaded() || !EnsureFFBDeviceReady())
         return;
     {
@@ -529,7 +529,7 @@ void StartPresetTest()
 
 void StopPresetTest()
 {
-    ClearVehicleState();
+    ResetVehicleState();
     {
         std::lock_guard<std::mutex> lock(g_presetMutex);
         g_presetTestState = PresetTestState{};
