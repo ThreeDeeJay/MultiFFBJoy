@@ -77,3 +77,14 @@ language-specific names or BeamNG internal codenames.
 - `PROFILE` starts the preset monitor rather than applying only one sample.
 - Forcefield springs mark themselves persistent, preventing the UDP safety timer
   from immediately stopping a valid position-aware profile.
+
+## BeamNG live-state protocol
+
+The BeamNG Lua extension and MultiFFBJoy helper now use a small UDP handshake/state protocol on `127.0.0.1:65458`.
+
+- `HELLO|BeamNG.drive` — Lua announces itself; the helper replies `HELLO_ACK|MultiFFBJoy`.
+- `VEHICLE|...` — selects the configured FFB preset for the current vehicle/configuration.
+- `STATE|...` — sends the live transmission/gear state. Gear-state messages override the helper's physical-position preset test while a BeamNG vehicle profile is active.
+- `ACK|VEHICLE` / `ACK|STATE` — helper acknowledgements.
+
+`Configuration.txt` remains next to `MultiFFBJoy.exe`.

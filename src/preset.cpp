@@ -1,4 +1,5 @@
 #include "common.h"
+#include <cctype>
 
 #include <cstring>
 #include <sstream>
@@ -9,6 +10,8 @@ std::mutex g_presetMutex;
 FFBPreset g_loadedPreset;
 std::vector<PresetInfo> g_availablePresets;
 PresetTestState g_presetTestState;
+VehicleState g_vehicleState;
+std::atomic<bool> g_vehicleStateValid{false};
 
 namespace
 {
@@ -255,6 +258,94 @@ FFBPreset BuildHardCodedPRND()
     return preset;
 }
 
+std::string NormalizeGearToken(const std::string& value)
+{
+    std::string result;
+    for (unsigned char c : value)
+        if (std::isalnum(c)) result.push_back(static_cast<char>(std::toupper(c)));
+    return result;
+}
+
+bool GearMatchesField(const ForceField& field, const VehicleState& state)
+{
+    const std::string gear = NormalizeGearToken(state.gear);
+    const std::string name = NormalizeGearToken(field.name);
+    if (gear.empty() || name.empty()) return false;
+
+    if (gear == "P" && name == "PARK") return true;
+    if (gear == "R" && name == "REVERSE") return true;
+    if (gear == "N" && name == "NEUTRAL") return true;
+    if (gear == "D" && name == "DRIVE") return true;
+    if ((gear == "1" || gear == "L" || gear == "LOW") &&
+        (name == "1" || name == "LOW" || name == "FIRST" || name == "FIRSTGEAR")) return true;
+    if ((gear == "2" || gear == "2ND" || gear == "SECOND") &&
+        (name == "2" || name == "2ND" || name == "SECOND" || name == "SECONDGEAR")) return true;
+
+    // Generic numbered manual/sequential positions.
+    if (state.gearIndex != 0)
+    {
+        if (field.primarySequentialGearValue == state.gearIndex ||
+            field.secondarySequentialGearValue == state.gearIndex)
+            return true;
+    }
+
+    // Last-resort exact normalized-name match, useful for custom presets
+    // whose forcefield names are themselves gear labels (e.g. "1", "2", "R").
+    if (gear == name) return true;
+    return false;
+}
+
+void ApplyVehicleState(const VehicleState& state)
+{
+    if (!IsForceFieldPresetLoaded())
+        return;
+    if (!EnsureFFBDeviceReady())
+        return;
+
+    ForceField selected;
+    bool found = false;
+    int index = -1;
+    {
+        std::lock_guard<std::mutex> lock(g_presetMutex);
+        g_vehicleState = state;
+        g_vehicleStateValid = true;
+        for (size_t i = 0; i < g_loadedPreset.forceFields.size(); ++i)
+        {
+            if (GearMatchesField(g_loadedPreset.forceFields[i], state))
+            {
+                selected = g_loadedPreset.forceFields[i];
+                index = static_cast<int>(i);
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if (!found)
+    {
+        Logf("Vehicle state has no matching forcefield: gear=\"%s\" gearIndex=%d.",
+             state.gear.c_str(), state.gearIndex);
+        return;
+    }
+
+    Logf("Vehicle gear state -> zone \"%s\" (index=%d, gear=%s, gearIndex=%d).",
+         selected.name.c_str(), index, state.gear.c_str(), state.gearIndex);
+    if (selected.forceType != 1)
+    {
+        StopSpring();
+        return;
+    }
+    if (!SetSpringForceField(selected))
+        Logf("Failed to apply vehicle-state forcefield \"%s\".", selected.name.c_str());
+}
+
+void ClearVehicleState()
+{
+    g_vehicleStateValid = false;
+    std::lock_guard<std::mutex> lock(g_presetMutex);
+    g_vehicleState = VehicleState{};
+}
+
 void PresetMonitorThread()
 {
     Log("Preset monitor thread started.");
@@ -374,6 +465,8 @@ void UpdatePresetTest()
     }
     if (!enabled || !IsForceFieldPresetLoaded() || !EnsureFFBDeviceReady())
         return;
+    if (g_vehicleStateValid.load(std::memory_order_acquire))
+        return;
 
     LONG x = 0, y = 0;
     if (!ReadFFBJoystickPosition(x, y))
@@ -420,6 +513,7 @@ void UpdatePresetTest()
 
 void StartPresetTest()
 {
+    ClearVehicleState();
     if (!IsForceFieldPresetLoaded() || !EnsureFFBDeviceReady())
         return;
     {
@@ -435,6 +529,7 @@ void StartPresetTest()
 
 void StopPresetTest()
 {
+    ClearVehicleState();
     {
         std::lock_guard<std::mutex> lock(g_presetMutex);
         g_presetTestState = PresetTestState{};

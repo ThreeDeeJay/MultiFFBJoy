@@ -27,7 +27,7 @@ namespace MultiFFBJoy
 inline constexpr UINT WM_APP_LOG = WM_APP + 1;
 inline constexpr UINT WM_APP_STATUS = WM_APP + 2;
 inline constexpr int UDP_PORT = 65458;
-inline constexpr DWORD COMMAND_TIMEOUT_MS = 250;
+inline constexpr DWORD COMMAND_TIMEOUT_MS = 5000;
 inline constexpr DWORD SOCKET_TIMEOUT_MS = 25;
 inline constexpr int IDC_FFB_UP = 2001;
 inline constexpr int IDC_FFB_DOWN = 2002;
@@ -168,6 +168,23 @@ struct ResolvedProfile
     std::string sourcePath;
 };
 
+struct VehicleState
+{
+    int vehicleId = -1;
+    std::string vehicle;
+    std::string configuration;
+    std::string transmission;
+    std::string transmissionRaw;
+    std::string gear;
+    int gearIndex = 0;
+    std::string gearboxMode;
+    double gearPosition = 0.0;
+    std::string automaticModes;
+};
+
+extern VehicleState g_vehicleState;
+extern std::atomic<bool> g_vehicleStateValid;
+
 extern DeviceState g_state;
 extern ActiveSpringState g_activeSpring;
 extern std::vector<DeviceCandidate> g_candidates;
@@ -204,6 +221,8 @@ bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request);
 bool StartUdpServer();
 void StopUdpServer();
 void SendUdpCommand(const std::string& command);
+void ApplyVehicleState(const VehicleState& state);
+void ClearVehicleState();
 
 // DirectInput / FFB.
 bool InitializeDirectInput(HINSTANCE instance);

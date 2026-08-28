@@ -394,6 +394,9 @@ bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request)
     if (!LoadForceFieldPreset(profile.presetPath))
         return false;
     StartPresetTest();
+    // Vehicle-selected profiles are driven by the live BeamNG gear state,
+    // not by the helper's physical-position zone detector.
+    g_vehicleStateValid = true;
     return true;
 }
 } // namespace MultiFFBJoy

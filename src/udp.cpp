@@ -7,11 +7,41 @@ namespace MultiFFBJoy
 namespace
 {
 bool g_wsaStarted = false;
+sockaddr_in g_lastClientAddress{};
+bool g_haveLastClientAddress = false;
+std::mutex g_clientAddressMutex;
 
 void TouchCommandWatchdog()
 {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     g_state.lastCommand = std::chrono::steady_clock::now();
+}
+
+void SendUdpReply(const std::string& command)
+{
+    std::lock_guard<std::mutex> lock(g_clientAddressMutex);
+    if (!g_haveLastClientAddress || g_socket == INVALID_SOCKET)
+        return;
+    const int result = sendto(
+        g_socket, command.c_str(), static_cast<int>(command.size()), 0,
+        reinterpret_cast<const sockaddr*>(&g_lastClientAddress),
+        sizeof(g_lastClientAddress));
+    if (result == SOCKET_ERROR)
+        Logf("UDP reply failed: %d", WSAGetLastError());
+}
+
+std::vector<std::string> SplitPipe(const std::string& command)
+{
+    std::vector<std::string> fields;
+    size_t start = 0;
+    while (start <= command.size())
+    {
+        const size_t end = command.find('|', start);
+        if (end == std::string::npos) { fields.push_back(command.substr(start)); break; }
+        fields.push_back(command.substr(start, end - start));
+        start = end + 1;
+    }
+    return fields;
 }
 
 void ProcessCommand(const std::string& command)
@@ -20,32 +50,56 @@ void ProcessCommand(const std::string& command)
     std::string operation;
     if (command.rfind("VEHICLE|", 0) == 0)
         operation = "VEHICLE";
+    else if (command.rfind("STATE|", 0) == 0)
+        operation = "STATE";
+    else if (command.rfind("HELLO|", 0) == 0)
+        operation = "HELLO";
     else
         stream >> operation;
     if (operation.empty())
         return;
 
+    if (operation == "HELLO")
+    {
+        Log("RX: HELLO from BeamNG Lua; connection is ALIVE.");
+        SendUdpReply("HELLO_ACK|MultiFFBJoy");
+        return;
+    }
     if (operation == "PING")
     {
         Log("RX: PING");
+        SendUdpReply("PONG|MultiFFBJoy");
+        return;
+    }
+    if (operation == "STATE")
+    {
+        const auto fields = SplitPipe(command);
+        if (fields.size() < 10)
+        {
+            Log("RX: malformed STATE command.");
+            return;
+        }
+        VehicleState state;
+        try { state.vehicleId = std::stoi(fields[1]); } catch (...) { state.vehicleId = -1; }
+        state.vehicle = fields[2];
+        state.configuration = fields[3];
+        state.transmission = fields[4];
+        state.gear = fields[5];
+        try { state.gearIndex = std::stoi(fields[6]); } catch (...) { state.gearIndex = 0; }
+        state.gearboxMode = fields[7];
+        try { state.gearPosition = std::stod(fields[8]); } catch (...) { state.gearPosition = 0.0; }
+        state.automaticModes = fields[9];
+        Logf("RX: STATE vehicle=%s config=%s transmission=%s gear=%s gearIndex=%d position=%.3f mode=%s",
+             state.vehicle.c_str(), state.configuration.c_str(), state.transmission.c_str(),
+             state.gear.c_str(), state.gearIndex, state.gearPosition, state.gearboxMode.c_str());
+        ApplyVehicleState(state);
+        SendUdpReply("ACK|STATE");
         return;
     }
     if (operation == "VEHICLE")
     {
         // VEHICLE|game|vehicleType|vehicle|configuration|transmission|gearLayout
-        std::vector<std::string> fields;
-        size_t start = 0;
-        while (start <= command.size())
-        {
-            const size_t end = command.find('|', start);
-            if (end == std::string::npos)
-            {
-                fields.push_back(command.substr(start));
-                break;
-            }
-            fields.push_back(command.substr(start, end - start));
-            start = end + 1;
-        }
+        const auto fields = SplitPipe(command);
 
         if (fields.size() < 7 || fields[0] != "VEHICLE")
         {
@@ -68,6 +122,7 @@ void ProcessCommand(const std::string& command)
 
         if (!LoadResolvedVehicleProfile(request))
             Log("VEHICLE profile resolution failed.");
+        SendUdpReply("ACK|VEHICLE");
         return;
     }
     if (operation == "PROFILE")
@@ -162,6 +217,11 @@ void NetworkThread()
         if (received > 0)
         {
             buffer[received] = '\0';
+            {
+                std::lock_guard<std::mutex> lock(g_clientAddressMutex);
+                g_lastClientAddress = sender;
+                g_haveLastClientAddress = true;
+            }
             TouchCommandWatchdog();
             timeoutStopIssued = false;
             ProcessCommand(buffer);
@@ -223,6 +283,10 @@ bool StartUdpServer()
     setsockopt(g_socket, SOL_SOCKET, SO_RCVTIMEO,
                reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 
+    BOOL reuseAddress = TRUE;
+    setsockopt(g_socket, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&reuseAddress), sizeof(reuseAddress));
+
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<u_short>(UDP_PORT));
@@ -267,6 +331,11 @@ void StopUdpServer()
     }
     if (g_networkThread.joinable())
         g_networkThread.join();
+    {
+        std::lock_guard<std::mutex> lock(g_clientAddressMutex);
+        g_haveLastClientAddress = false;
+        g_lastClientAddress = {};
+    }
     if (g_wsaStarted)
     {
         WSACleanup();
