@@ -4,6 +4,7 @@ local stateTimer = 0
 local STATE_INTERVAL = 0.05
 local lastStateSignature = nil
 local metadataSent = false
+local pendingShift = nil
 
 local function safeValue(object, key)
   if object == nil then return nil end
@@ -322,36 +323,108 @@ function M.sendMetadata()
   sendMetadataAndPrimeState()
 end
 
-local function sendStateIfChanged()
-  if not metadataSent then return end
+local function queueGearVerification(expectedIndex, expectedName, ok, err)
   local metadata = buildMetadata()
-  local signature = table.concat({
-    tostring(metadata.vehicleId), metadata.gear, metadata.gearIndex,
-    metadata.gearboxMode, metadata.gearPosition, metadata.transmissionRaw,
-    metadata.automaticModes, metadata.defaultAutomaticMode
-  }, "|")
-  if signature == lastStateSignature then return end
-  lastStateSignature = signature
-
-  local state = {
+  local payload = {
     vehicleId = metadata.vehicleId,
-    vehicle = metadata.vehicle,
-    configuration = metadata.configuration,
-    transmission = metadata.transmission,
-    transmissionRaw = metadata.transmissionRaw,
+    expectedIndex = expectedIndex,
+    expectedName = expectedName or "",
+    shiftCallSucceeded = ok == true,
+    shiftError = stringify(err),
     gear = metadata.gear,
     gearIndex = metadata.gearIndex,
-    gearboxMode = metadata.gearboxMode,
     gearPosition = metadata.gearPosition,
-    automaticModes = metadata.automaticModes,
-    defaultAutomaticMode = metadata.defaultAutomaticMode,
+    controllerGear = "",
+    controllerIndex = "",
+    controllerPosition = "",
   }
-  state._geFunction = "receiveVehicleState"
-  queueToGE(state)
+
+  local mainController = controller and safeValue(controller, "mainController") or nil
+  payload.controllerGear = stringify(safeCall(mainController, "getGearName"))
+  payload.controllerIndex = stringify(safeValue(mainController, "currentGearIndex"))
+  payload.controllerPosition = stringify(safeCall(mainController, "getGearPosition"))
+  payload._geFunction = "receiveGearVerification"
+  queueToGE(payload)
+end
+
+function M.shiftToGearIndex(index, expectedName)
+  local idx = tonumber(index)
+  if idx == nil then
+    print("[MultiFFBJoy/VLUA] SHIFT rejected: invalid index " .. tostring(index))
+    return false
+  end
+  idx = math.floor(idx)
+
+  local mainController = controller and safeValue(controller, "mainController") or nil
+  if mainController == nil and controller and controller.getController then
+    local ok, result = pcall(function() return controller.getController("main") end)
+    if ok then mainController = result end
+  end
+
+  if mainController == nil or type(safeValue(mainController, "shiftToGearIndex")) ~= "function" then
+    print("[MultiFFBJoy/VLUA] SHIFT failed: main vehicle controller has no shiftToGearIndex()")
+    queueGearVerification(idx, expectedName, false, "main controller unavailable")
+    return false
+  end
+
+  local ok, err = pcall(function()
+    mainController:shiftToGearIndex(idx)
+  end)
+
+  if not ok then
+    print("[MultiFFBJoy/VLUA] SHIFT call failed index=" .. tostring(idx) .. ": " .. tostring(err))
+  else
+    print("[MultiFFBJoy/VLUA] SHIFT requested index=" .. tostring(idx) .. " expected=" .. tostring(expectedName or ""))
+  end
+
+  pendingShift = {
+    expectedIndex = idx,
+    expectedName = tostring(expectedName or ""),
+    elapsed = 0,
+    callSucceeded = ok,
+    error = err,
+  }
+
+  -- A gearbox can intentionally delay the actual gear change (especially
+  -- automatic transmissions and neutral transitions).  Verification is
+  -- therefore performed from subsequent vehicle-update ticks, using the
+  -- authoritative controller/electrics state rather than the requested index.
+  if not ok then
+    queueGearVerification(idx, expectedName, ok, err)
+    pendingShift = nil
+  end
+  return ok
 end
 
 function M.onUpdate(dtReal, dtSim, dtRaw)
-  stateTimer = stateTimer + (dtReal or 0)
+  local dt = dtReal or 0
+  stateTimer = stateTimer + dt
+
+  if pendingShift ~= nil then
+    pendingShift.elapsed = pendingShift.elapsed + dt
+    if pendingShift.elapsed >= 0.05 then
+      pendingShift.elapsed = 0
+      local metadata = buildMetadata()
+      local actualIndex = tonumber(metadata.gearIndex)
+      local mainController = controller and safeValue(controller, "mainController") or nil
+      local controllerIndex = tonumber(safeValue(mainController, "currentGearIndex"))
+      local expected = pendingShift.expectedIndex
+
+      if actualIndex == expected or controllerIndex == expected then
+        queueGearVerification(expected, pendingShift.expectedName, pendingShift.callSucceeded, pendingShift.error)
+        pendingShift = nil
+      end
+    end
+
+    -- Use a separate age accumulator so a permanently refused shift cannot
+    -- leave the verification pending forever.
+    pendingShift.age = (pendingShift.age or 0) + dt
+    if pendingShift ~= nil and pendingShift.age >= 1.5 then
+      queueGearVerification(pendingShift.expectedIndex, pendingShift.expectedName, pendingShift.callSucceeded, pendingShift.error)
+      pendingShift = nil
+    end
+  end
+
   if stateTimer < STATE_INTERVAL then return end
   stateTimer = 0
   sendStateIfChanged()

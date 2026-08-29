@@ -7,41 +7,75 @@ local UDP_PORT = 65458
 
 local initialized = false
 local currentVehicleId = nil
+local currentVehicleCode = ""
+local currentConfigurationCode = ""
+local currentPartConfig = ""
+local currentMetadata = nil
+local currentState = nil
 
 local lastReacquireTime = -1000
 local REACQUIRE_COOLDOWN = 1.0
 
--- Gear command verification state.
-local pendingShift = nil
-local nextShiftId = 0
-local lastVerifiedGearIndex = nil
-local lastVerifiedGearName = nil
-local lastMetadataTime = -1000
-local METADATA_POLL_INTERVAL = 0.25
-local SHIFT_VERIFY_TIMEOUT = 1.5
-local SHIFT_VERIFY_INTERVAL = 0.10
+local metadataTimer = 0
+local metadataPendingVehicleId = nil
+local METADATA_RETRY_INTERVAL = 0.25
+local METADATA_RETRY_COUNT = 12
+local metadataRetriesLeft = 0
+
+local heartbeatTimer = 0
+local HELLO_INTERVAL = 2.0
+local HELPER_TIMEOUT = 6.0
+local timeSinceHelperAck = HELPER_TIMEOUT + 1
+local helperConnected = false
+
+local lastVehicleCommandSignature = nil
+local lastStateCommandSignature = nil
+local sendVehicleRequest = nil
+local sendVehicleState = nil
+local queueVehicleMetadataDiagnostic = nil
 
 local function log(message)
   print("[MultiFFBJoy] " .. tostring(message))
 end
 
-local function sendCommand(command)
+local function safeToString(value)
+  if value == nil then return "" end
+  return tostring(value)
+end
+
+local function firstNonEmpty(...)
+  for i = 1, select("#", ...) do
+    local value = select(i, ...)
+    if value ~= nil then
+      local text = tostring(value)
+      if text ~= "" then
+        return value
+      end
+    end
+  end
+  return nil
+end
+
+
+local function sendCommand(command, quiet)
   if udp == nil then
-    log("Cannot send command; UDP is not initialized.")
+    if not quiet then log("Cannot send command; UDP is not initialized.") end
     return false
   end
 
   local ok, err = pcall(function()
     udp:sendto(command, UDP_HOST, UDP_PORT)
   end)
-
   if not ok then
     log("UDP send failed: " .. tostring(err))
     return false
   end
-
-  log("TX: " .. tostring(command))
+  if not quiet then log("TX: " .. tostring(command)) end
   return true
+end
+
+local function sendHello()
+  return sendCommand("HELLO|BeamNG.drive", true)
 end
 
 local function requestReacquire()
@@ -50,779 +84,515 @@ local function requestReacquire()
     log("REACQUIRE suppressed by cooldown.")
     return
   end
-
   lastReacquireTime = now
   log("Requesting FFB device re-acquisition.")
   sendCommand("REACQUIRE")
 end
 
-local function center()
-  log("Requesting FFB center.")
-  sendCommand("CENTER")
-end
-
 local function initializeUDP()
-  if udp ~= nil then
-    return true
-  end
+  if udp ~= nil then return true end
 
-  local ok, result = pcall(function()
-    return require("socket")
-  end)
-
+  local ok, result = pcall(function() return require("socket") end)
   if not ok then
     log("Failed to load socket module: " .. tostring(result))
     return false
   end
-
   socket = result
 
-  local socketOK, socketResult = pcall(function()
-    return socket.udp()
-  end)
-
+  local socketOK, socketResult = pcall(function() return socket.udp() end)
   if not socketOK or socketResult == nil then
     log("Failed to create UDP socket: " .. tostring(socketResult))
     return false
   end
 
   udp = socketResult
-  pcall(function()
-    udp:settimeout(0)
-  end)
-
+  pcall(function() udp:settimeout(0) end)
   log("UDP initialized: " .. UDP_HOST .. ":" .. tostring(UDP_PORT))
+  sendHello()
   return true
 end
 
-local function getPlayerVehicleId()
-  if be == nil then
-    return nil
+local function pollUdp()
+  if udp == nil then return end
+  for _ = 1, 8 do
+    local ok, data = pcall(function()
+      return udp:receivefrom()
+    end)
+    if not ok or data == nil then break end
+
+    if data == "HELLO_ACK|MultiFFBJoy" or data:sub(1, 18) == "HELLO_ACK|MultiFFBJoy" then
+      timeSinceHelperAck = 0
+      if not helperConnected then
+        helperConnected = true
+        log("========================================")
+        log("FFB helper connection is ALIVE.")
+        log("========================================")
+      end
+    elseif data == "SYNC_REQUEST|MultiFFBJoy" then
+      timeSinceHelperAck = 0
+      log("FFB helper requested vehicle/profile synchronization.")
+      lastVehicleCommandSignature = nil
+      lastStateCommandSignature = nil
+      if currentVehicleId ~= nil then
+        queueVehicleMetadataDiagnostic(currentVehicleId, "helper sync", true)
+      elseif currentMetadata ~= nil then
+        sendVehicleRequest(currentMetadata, "helper sync")
+        if currentState ~= nil then
+          sendVehicleState(currentState, "helper sync")
+        end
+      end
+    elseif data:sub(1, 6) == "SHIFT|" then
+      timeSinceHelperAck = 0
+      local zoneName, gearIndex = data:match("^SHIFT|([^|]*)|(-?%d+)$")
+      local index = tonumber(gearIndex)
+      if index ~= nil then
+        local vehicle = nil
+        if be ~= nil then
+          local okVehicle, resultVehicle = pcall(function() return be:getPlayerVehicle(0) end)
+          if okVehicle then vehicle = resultVehicle end
+        end
+        if vehicle ~= nil then
+          -- Shift through the vehicle extension, where the documented
+          -- vehicle-controller API is available and where we can verify the
+          -- authoritative gear state after the request.  Do not treat a
+          -- successful queueLuaCommand() call as a successful transmission
+          -- shift.
+          local command = string.format([[
+            extensions.load("multiffbjoy")
+            if extensions.multiffbjoy and extensions.multiffbjoy.shiftToGearIndex then
+              extensions.multiffbjoy.shiftToGearIndex(%d, %q)
+            else
+              print("[MultiFFBJoy] SHIFT failed: vehicle extension unavailable")
+            end
+          ]], math.floor(index), tostring(zoneName or ""))
+          local ok, err = pcall(function() vehicle:queueLuaCommand(command) end)
+          if ok then
+            log("FFB zone gear command queued: " .. tostring(zoneName) .. " -> index " .. tostring(index))
+          else
+            log("FFB zone gear command failed: " .. tostring(err))
+          end
+        else
+          log("FFB zone gear command skipped: player vehicle unavailable (" .. tostring(zoneName) .. ")")
+        end
+      end
+    elseif data == "ACK|VEHICLE" then
+      timeSinceHelperAck = 0
+    elseif data == "ACK|STATE" then
+      timeSinceHelperAck = 0
+    end
+  end
+end
+
+local function updateHelperConnection(dtReal)
+  timeSinceHelperAck = timeSinceHelperAck + (dtReal or 0)
+  heartbeatTimer = heartbeatTimer + (dtReal or 0)
+
+  if heartbeatTimer >= HELLO_INTERVAL then
+    heartbeatTimer = 0
+    sendHello()
   end
 
-  local ok, result = pcall(function()
-    return be:getPlayerVehicleID(0)
-  end)
+  if helperConnected and timeSinceHelperAck > HELPER_TIMEOUT then
+    helperConnected = false
+    log("FFB helper connection appears to be LOST.")
+  end
+end
 
+local function getPlayerVehicleId()
+  if be == nil then return nil end
+  local ok, result = pcall(function() return be:getPlayerVehicleID(0) end)
   if not ok then
     log("getPlayerVehicleID failed: " .. tostring(result))
     return nil
   end
-
-  if result == nil or result <= 0 then
-    return nil
-  end
-
+  if result == nil or result < 0 then return nil end
   return result
 end
 
-local function getVehicleObject(vehicleId)
-  if vehicleId == nil or vehicleId <= 0 or be == nil then
-    return nil
-  end
-
-  local ok, vehicle = pcall(function()
-    return be:getObjectByID(vehicleId)
-  end)
-
-  if not ok then
-    log("getObjectByID(" .. tostring(vehicleId) .. ") failed: " .. tostring(vehicle))
-    return nil
-  end
-
-  return vehicle
+local function getPlayerVehicle()
+  if be == nil then return nil end
+  local ok, result = pcall(function() return be:getPlayerVehicle(0) end)
+  return ok and result or nil
 end
 
-local function queueVehicleLua(vehicleId, command)
-  local vehicle = getVehicleObject(vehicleId)
-  if vehicle == nil then
-    log("Cannot queue vehicle Lua command: vehicle " .. tostring(vehicleId) .. " is unavailable.")
-    return false
-  end
-
-  local ok, err = pcall(function()
-    vehicle:queueLuaCommand(command)
-  end)
-
-  if not ok then
-    log("vehicle:queueLuaCommand failed: " .. tostring(err))
-    return false
-  end
-
-  log("VLUA command queued: " .. command)
-  return true
-end
-
-local function requestVehicleMetadata(reason)
-  if currentVehicleId == nil then
-    return false
-  end
-
-  local vehicleId = currentVehicleId
-  local command = [[
-local function __mffb_get(v)
-  local function s(x)
-    if x == nil then return "" end
-    return tostring(x)
-  end
-
-  local gear = ""
-  local gearIndex = ""
-  local gearPosition = ""
-  local gearboxMode = ""
-  local transmission = ""
-  local rawTransmission = ""
-  local layout = ""
-  local automaticModes = ""
-  local defaultAutomaticMode = ""
-  local vehicleName = ""
-  local configName = ""
-
-  pcall(function()
-    if electrics then
-      gear = s(electrics.gear)
-      gearIndex = s(electrics.gearIndex)
-      gearPosition = s(electrics.gear_A)
-    end
-  end)
-
-  pcall(function()
-    if controller then
-      if controller.getGearName then
-        gear = s(controller.getGearName())
-      end
-      if controller.getGearPosition then
-        gearPosition = s(controller.getGearPosition())
-      end
-      if controller.currentGearIndex ~= nil then
-        gearIndex = s(controller.currentGearIndex)
-      end
-    end
-  end)
-
-  pcall(function()
-    if controller and controller.gearboxBehavior then
-      gearboxMode = s(controller.gearboxBehavior)
-    end
-  end)
-
-  pcall(function()
-    if controller and controller.shiftLogicName then
-      rawTransmission = s(controller.shiftLogicName)
-    end
-  end)
-
-  pcall(function()
-    if controller and controller.automaticModes then
-      automaticModes = s(controller.automaticModes)
-      layout = automaticModes
-    end
-    if controller and controller.defaultAutomaticMode then
-      defaultAutomaticMode = s(controller.defaultAutomaticMode)
-    end
-  end)
-
-  -- Best-effort vehicle/config names. These may be unavailable in VLUA;
-  -- GE will fill them from its own metadata path when necessary.
-  pcall(function()
-    if v and v.vehicleDirectory then
-      vehicleName = s(v.vehicleDirectory)
-    end
-  end)
-
-  print(string.format(
-    "[MultiFFBJoy/VLUA] Metadata: vehicle=%s config=%s type=%s transmission=%s rawTransmission=%s gear=%s gearIndex=%s gearPosition=%s layout=%s [electrics.gear=%s; electrics.gearIndex=%s; electrics.gear_A=%s; gearbox.getGearName=%s; gearbox.getGearPosition=%s; gearbox.currentGearIndex=%s; controller.getGearName=%s; controller.getGearPosition=%s; controller.currentGearIndex=%s; automaticModes=%s; defaultAutomaticMode=%s]",
-    vehicleName,
-    configName,
-    "",
-    transmission,
-    rawTransmission,
-    gear,
-    gearIndex,
-    gearPosition,
-    layout,
-    s(electrics and electrics.gear),
-    s(electrics and electrics.gearIndex),
-    s(electrics and electrics.gear_A),
-    s((gearbox and gearbox.getGearName) and gearbox.getGearName()),
-    s((gearbox and gearbox.getGearPosition) and gearbox.getGearPosition()),
-    s((gearbox and gearbox.currentGearIndex) and gearbox.currentGearIndex),
-    s((controller and controller.getGearName) and controller.getGearName()),
-    s((controller and controller.getGearPosition) and controller.getGearPosition()),
-    s(controller and controller.currentGearIndex),
-    automaticModes,
-    defaultAutomaticMode
-  ))
-end
-__mffb_get()
-]]
-
-  -- The actual metadata command is intentionally fire-and-forget. The GE
-  -- side below also polls the authoritative GE/VLUA state after a shift.
-  if queueVehicleLua(vehicleId, command) then
-    log("VLUA metadata request queued for vehicle " .. tostring(vehicleId) .. " (" .. tostring(reason) .. ").")
-    return true
-  end
-  return false
-end
-
-local function normalizeGearName(name)
-  if name == nil then
-    return ""
-  end
-  return string.upper(tostring(name))
-end
-
-local function gearNameMatchesExpected(actualName, expectedName)
-  local actual = normalizeGearName(actualName)
-  local expected = normalizeGearName(expectedName)
-
-  if actual == expected then
-    return true
-  end
-
-  -- Accept the common automatic-mode aliases used by BeamNG.
+local function normalizeVehicleType(value)
+  if value == nil then return "" end
+  local text = tostring(value)
+  if text == "" then return "" end
   local aliases = {
-    ["PARK"] = "P",
-    ["REVERSE"] = "R",
-    ["NEUTRAL"] = "N",
-    ["DRIVE"] = "D",
-    ["LOW"] = "L",
+    car="Car", cars="Car", truck="Truck", trucks="Truck",
+    aircraft="Aircraft", plane="Aircraft", planes="Aircraft", helicopter="Aircraft",
+    boat="Boat", boats="Boat", motorcycle="Motorcycle", motorcycles="Motorcycle",
+    trailer="Trailer", trailers="Trailer", prop="Prop", utility="Utility",
   }
-
-  return aliases[actual] == expected or aliases[expected] == actual
+  return aliases[string.lower(text)] or text
 end
 
-local function getGearStateFromVehicle(vehicleId)
-  local vehicle = getVehicleObject(vehicleId)
+local function normalizeTransmission(value, rawType)
+  local text = value
+  if text == nil or text == "" then text = rawType end
+  if text == nil then return "" end
+  text = tostring(text)
+  local lower = string.lower(text)
+  if lower == "automaticgearbox" or lower == "automatic" then return "Automatic"
+  elseif lower == "manualgearbox" or lower == "manual" then return "Manual"
+  elseif lower == "sequentialgearbox" or lower == "sequential" then return "Sequential"
+  elseif lower == "dctgearbox" or lower == "dct" then return "DCT"
+  elseif lower == "cvtgearbox" or lower == "cvt" then return "CVT"
+  elseif lower == "electricmotor" or lower == "electric" then return "Electric"
+  elseif lower == "dummy" or lower == "shiftlogic-dummy" then return "" end
+  return text
+end
+
+local function normalizeGearLayout(value)
+  if value == nil then return "" end
+  return tostring(value)
+end
+
+sendVehicleRequest = function(metadata, reason)
+  if metadata == nil then return false end
+  local vehicleCode = safeToString(metadata.vehicle)
+  if vehicleCode == "" then
+    log("Cannot send vehicle profile request without a vehicle codename.")
+    return false
+  end
+
+  local game = safeToString(metadata.game)
+  if game == "" then game = "BeamNG.drive" end
+  local vehicleType = normalizeVehicleType(metadata.vehicleType)
+  local transmission = normalizeTransmission(metadata.transmission, metadata.transmissionRaw)
+  local configurationCode = safeToString(metadata.configuration)
+  local gearLayout = normalizeGearLayout(metadata.gearLayout)
+
+  local command = table.concat({
+    "VEHICLE", game, vehicleType, vehicleCode, configurationCode,
+    transmission, gearLayout
+  }, "|")
+  local signature = command
+
+  if signature == lastVehicleCommandSignature then return true end
+  lastVehicleCommandSignature = signature
+
+  log("Vehicle profile request (" .. tostring(reason or "unknown") .. "):")
+  log("  Game = " .. game)
+  log("  VehicleType = " .. (vehicleType ~= "" and vehicleType or "<unknown>"))
+  log("  Vehicle = " .. vehicleCode)
+  log("  Configuration = " .. (configurationCode ~= "" and configurationCode or "<unknown>"))
+  log("  Transmission = " .. (transmission ~= "" and transmission or "<unknown>"))
+  log("  GearLayout = " .. (gearLayout ~= "" and gearLayout or "<unknown>"))
+  return sendCommand(command)
+end
+
+sendVehicleState = function(state, reason)
+  if state == nil then return false end
+  local gear = safeToString(state.gear)
+  local gearIndex = safeToString(state.gearIndex)
+  local gearboxMode = safeToString(state.gearboxMode)
+  local gearPosition = safeToString(state.gearPosition)
+  local transmission = normalizeTransmission(state.transmission, state.transmissionRaw)
+
+  local command = table.concat({
+    "STATE", safeToString(state.vehicleId), safeToString(state.vehicle),
+    safeToString(state.configuration), transmission, gear, gearIndex,
+    gearboxMode, gearPosition, safeToString(state.automaticModes),
+    safeToString(state.defaultAutomaticMode)
+  }, "|")
+  local signature = command
+  if signature == lastStateCommandSignature then return true end
+  lastStateCommandSignature = signature
+
+  log("TX STATE" .. (reason and (" (" .. tostring(reason) .. ")") or "")
+    .. ": gear=" .. (gear ~= "" and gear or "<unknown>")
+    .. " gearIndex=" .. (gearIndex ~= "" and gearIndex or "<unknown>")
+    .. " position=" .. (gearPosition ~= "" and gearPosition or "<unknown>"))
+  return sendCommand(command, true)
+end
+
+queueVehicleMetadataDiagnostic = function(vehicleId, reason, resetRetries)
+  local vehicle = getPlayerVehicle()
   if vehicle == nil then
-    return nil, nil, nil
-  end
-
-  local gear = nil
-  local gearIndex = nil
-  local gearPosition = nil
-
-  -- GE/VLUA objects expose Lua-side vehicle state through queueLuaCommand,
-  -- so this function is deliberately conservative. If the GE electrics
-  -- table is available on the object, use it; otherwise return nil and let
-  -- the explicit asynchronous verification query handle it.
-  pcall(function()
-    if vehicle.electrics then
-      gear = vehicle.electrics.gear
-      gearIndex = vehicle.electrics.gearIndex
-      gearPosition = vehicle.electrics.gear_A
-    end
-  end)
-
-  return gear, gearIndex, gearPosition
-end
-
-local function sendStateToHelper(gear, gearIndex, position, reason)
-  local safeGear = tostring(gear or "")
-  local safeIndex = tostring(gearIndex or "")
-  local safePosition = tostring(position or "")
-
-  log(
-    "TX STATE (" .. tostring(reason) .. "): gear="
-    .. safeGear
-    .. " gearIndex="
-    .. safeIndex
-    .. " position="
-    .. safePosition
-  )
-
-  sendCommand(
-    "STATE|"
-    .. safeGear
-    .. "|"
-    .. safeIndex
-    .. "|"
-    .. safePosition
-  )
-end
-
-local function sendVehicleProfile(reason)
-  if currentVehicleId == nil then
-    return
-  end
-
-  -- The existing GE metadata/profile discovery remains in the helper
-  -- protocol. Trigger a metadata request so the helper keeps its current
-  -- vehicle/profile resolution behavior.
-  sendCommand("REQUEST_VEHICLE_METADATA")
-  log("Vehicle metadata/profile synchronization requested (" .. tostring(reason) .. ").")
-end
-
-local function requestShiftVerification(expectedName, expectedIndex)
-  nextShiftId = nextShiftId + 1
-  pendingShift = {
-    id = nextShiftId,
-    vehicleId = currentVehicleId,
-    expectedName = expectedName,
-    expectedIndex = expectedIndex,
-    started = os.clock(),
-    lastPoll = -1000,
-    attempts = 0,
-  }
-
-  log(
-    "Shift verification started: expected="
-    .. tostring(expectedName)
-    .. " index="
-    .. tostring(expectedIndex)
-  )
-end
-
-local function queueGearShift(zoneName, gearIndex)
-  if currentVehicleId == nil then
-    log("Ignoring gear command because no player vehicle is active.")
+    log("Cannot queue VLUA metadata diagnostic; no player vehicle object.")
     return false
   end
 
-  local expectedName = tostring(zoneName or "")
-  local index = tonumber(gearIndex)
+  metadataPendingVehicleId = vehicleId
 
-  if index == nil then
-    log("Ignoring gear command with invalid index: " .. tostring(gearIndex))
-    return false
+  local partConfig = ""
+  local jBeam = ""
+  pcall(function() partConfig = safeToString(vehicle.partConfig) end)
+  pcall(function() jBeam = safeToString(vehicle.JBeam or vehicle.jBeam) end)
+  if partConfig ~= "" then currentPartConfig = partConfig end
+  if jBeam ~= "" then currentVehicleCode = jBeam end
+
+  if currentConfigurationCode == "" and partConfig ~= "" then
+    local normalized = partConfig:gsub("\\", "/")
+    local _, parsedConfiguration = normalized:match("vehicles/([^/]+)/([^/]+)%.pc$")
+    if parsedConfiguration ~= nil then currentConfigurationCode = parsedConfiguration end
   end
 
-  index = math.floor(index)
-
-  log(
-    "FFB zone gear command queued: "
-    .. expectedName
-    .. " -> index "
-    .. tostring(index)
-  )
-
-  -- BeamNG documents shiftToGearIndex(index) as a public vehicle-controller
-  -- function for automatic/manual/sequential gearbox controllers.
-  -- Calling the controller in VLUA is important: changing the helper's FFB
-  -- zone alone must never be treated as a successful transmission shift.
-  --
-  -- The VLUA command also reports the authoritative post-command gearbox
-  -- state back into GELUA via obj:queueGameEngineLua(). This lets GELUA
-  -- distinguish "command was queued" from "the gearbox actually changed".
-  local command = string.format([[
-local expectedIndex = %d
-local expectedName = %q
-local vehicleId = %d
-
-local function s(x)
-  if x == nil then return "" end
-  return tostring(x)
-end
-
-local function report()
-  local gear = ""
-  local gearIndex = ""
-  local gearPosition = ""
-  local controllerGear = ""
-  local controllerIndex = ""
-  local controllerPosition = ""
-
-  pcall(function()
-    if electrics then
-      gear = s(electrics.gear)
-      gearIndex = s(electrics.gearIndex)
-      gearPosition = s(electrics.gear_A)
-    end
-  end)
-
-  pcall(function()
-    if controller then
-      if controller.getGearName then controllerGear = s(controller.getGearName()) end
-      if controller.currentGearIndex ~= nil then controllerIndex = s(controller.currentGearIndex) end
-      if controller.getGearPosition then controllerPosition = s(controller.getGearPosition()) end
-    end
-  end)
-
-  if obj and obj.queueGameEngineLua then
-    obj:queueGameEngineLua(string.format(
-      "if extensions and extensions.multiffbjoy and extensions.multiffbjoy.onGearState then extensions.multiffbjoy.onGearState(%d,%q,%q,%q,%q,%q,%q,%q,%q) end",
-      vehicleId,
-      expectedName,
-      tostring(expectedIndex),
-      gear,
-      gearIndex,
-      gearPosition,
-      controllerGear,
-      controllerIndex,
-      controllerPosition
-    ))
+  if resetRetries ~= false then
+    metadataRetriesLeft = METADATA_RETRY_COUNT
+    metadataTimer = METADATA_RETRY_INTERVAL
   end
-end
 
-if controller and controller.shiftToGearIndex then
-  local ok, err = pcall(function()
-    controller.shiftToGearIndex(expectedIndex)
-  end)
-
+  local command = [[
+    extensions.load("multiffbjoy")
+    if extensions.multiffbjoy and extensions.multiffbjoy.sendMetadata then
+      extensions.multiffbjoy.sendMetadata()
+    end
+  ]]
+  local ok, result = pcall(function() vehicle:queueLuaCommand(command) end)
   if not ok then
-    print("[MultiFFBJoy/VLUA] shiftToGearIndex ERROR: " .. tostring(err))
-  end
-else
-  print("[MultiFFBJoy/VLUA] ERROR: controller.shiftToGearIndex unavailable")
-end
-
-report()
-]], index, expectedName, currentVehicleId)
-
-  if not queueVehicleLua(currentVehicleId, command) then
+    log("Failed to queue VLUA metadata diagnostic: " .. tostring(result))
     return false
   end
-
-  requestShiftVerification(expectedName, index)
+  log("VLUA metadata request queued for vehicle " .. tostring(vehicleId) .. " (" .. tostring(reason or "unknown") .. ").")
   return true
 end
 
-local function pollShiftVerification()
-  if pendingShift == nil then
+local function handleVehicleChange(vehicleId, reason)
+  if vehicleId == nil or vehicleId < 0 then
+    currentVehicleId = vehicleId
+    currentMetadata = nil
+    currentState = nil
+    metadataPendingVehicleId = nil
+    metadataRetriesLeft = 0
     return
   end
 
-  if currentVehicleId ~= pendingShift.vehicleId then
-    log("Shift verification cancelled: player vehicle changed.")
-    pendingShift = nil
+  local changed = vehicleId ~= currentVehicleId
+  if changed then
+    log("Player vehicle changed: " .. tostring(currentVehicleId) .. " -> " .. tostring(vehicleId) .. " (" .. tostring(reason or "unknown") .. ")")
+    currentVehicleId = vehicleId
+    currentVehicleCode = ""
+    currentConfigurationCode = ""
+    currentPartConfig = ""
+    currentMetadata = nil
+    currentState = nil
+    lastVehicleCommandSignature = nil
+    lastStateCommandSignature = nil
+    queueVehicleMetadataDiagnostic(vehicleId, reason, true)
+  elseif metadataPendingVehicleId == nil then
+    -- Ignore duplicate switch/startup callbacks once this vehicle is known.
     return
   end
-
-  local now = os.clock()
-  if now - pendingShift.started > SHIFT_VERIFY_TIMEOUT then
-    log(
-      "SHIFT VERIFY FAILED: expected="
-      .. tostring(pendingShift.expectedName)
-      .. " index="
-      .. tostring(pendingShift.expectedIndex)
-      .. " after "
-      .. tostring(pendingShift.attempts)
-      .. " poll(s)."
-    )
-
-    -- Send one fresh authoritative metadata query so the log shows what
-    -- the gearbox actually reports after the failed command.
-    requestVehicleMetadata("shift verify timeout")
-    pendingShift = nil
-    return
-  end
-
-  if now - pendingShift.lastPoll < SHIFT_VERIFY_INTERVAL then
-    return
-  end
-
-  pendingShift.lastPoll = now
-  pendingShift.attempts = pendingShift.attempts + 1
-
-  -- Ask the vehicle VM to report the authoritative state back to GELUA.
-  -- We intentionally do not infer success from the requested index.
-  local command = string.format([[
-local vehicleId = %d
-local expectedName = %q
-local expectedIndex = %d
-
-local function s(x)
-  if x == nil then return "" end
-  return tostring(x)
 end
 
-local gear = ""
-local gearIndex = ""
-local gearPosition = ""
-local controllerGear = ""
-local controllerIndex = ""
-local controllerPosition = ""
-
-pcall(function()
-  if electrics then
-    gear = s(electrics.gear)
-    gearIndex = s(electrics.gearIndex)
-    gearPosition = s(electrics.gear_A)
-  end
-end)
-
-pcall(function()
-  if controller then
-    if controller.getGearName then controllerGear = s(controller.getGearName()) end
-    if controller.currentGearIndex ~= nil then controllerIndex = s(controller.currentGearIndex) end
-    if controller.getGearPosition then controllerPosition = s(controller.getGearPosition()) end
-  end
-end)
-
-if obj and obj.queueGameEngineLua then
-  obj:queueGameEngineLua(string.format(
-    "if extensions and extensions.multiffbjoy and extensions.multiffbjoy.onGearState then extensions.multiffbjoy.onGearState(%d,%q,%q,%q,%q,%q,%q,%q,%q) end",
-    vehicleId,
-    expectedName,
-    tostring(expectedIndex),
-    gear,
-    gearIndex,
-    gearPosition,
-    controllerGear,
-    controllerIndex,
-    controllerPosition
-  ))
-end
-]], pendingShift.vehicleId, pendingShift.expectedName, pendingShift.expectedIndex)
-
-  queueVehicleLua(pendingShift.vehicleId, command)
-
-end
-
-local function onGearState(
-  vehicleId,
-  expectedName,
-  expectedIndex,
-  gear,
-  gearIndex,
-  gearPosition,
-  controllerGear,
-  controllerIndex,
-  controllerPosition
-)
-  if vehicleId ~= currentVehicleId then
+function M.receiveVehicleMetadata(metadata)
+  if type(metadata) ~= "table" then
+    log("Received invalid vehicle metadata payload.")
     return
   end
+  local vehicleId = tonumber(metadata.vehicleId)
+  if vehicleId == nil or vehicleId ~= currentVehicleId then return end
 
-  log(
-    "SHIFT VERIFY: expected="
-    .. tostring(expectedName)
-    .. " index="
-    .. tostring(expectedIndex)
-    .. " actualGear="
-    .. tostring(gear)
-    .. " actualGearIndex="
-    .. tostring(gearIndex)
-    .. " actualGear_A="
-    .. tostring(gearPosition)
-    .. " controllerGear="
-    .. tostring(controllerGear)
-    .. " controllerIndex="
-    .. tostring(controllerIndex)
-    .. " controllerPosition="
-    .. tostring(controllerPosition)
-  )
+  metadata.vehicle = safeToString(metadata.vehicle)
+  metadata.configuration = safeToString(metadata.configuration)
+  if metadata.vehicle == "" and currentVehicleCode ~= "" then
+    metadata.vehicle = currentVehicleCode
+    log("VLUA did not return vehicle codename; using GE fallback: " .. metadata.vehicle)
+  end
+  if metadata.configuration == "" and currentConfigurationCode ~= "" then
+    metadata.configuration = currentConfigurationCode
+    log("VLUA did not return configuration codename; using GE fallback: " .. metadata.configuration)
+  end
+  if safeToString(metadata.partConfig) == "" then metadata.partConfig = currentPartConfig end
 
-  local expected = tonumber(expectedIndex)
-  local actual = tonumber(gearIndex)
-  local actualController = tonumber(controllerIndex)
+  -- Vehicle Lua may not expose the model Type directly.  The GE vehicle
+  -- manager does, however, expose model metadata for the active vehicle.
+  -- Use it as the authoritative type fallback (Car, Aircraft, Truck, etc.).
+  if safeToString(metadata.vehicleType) == "" then
+    local modelKey = firstNonEmpty(metadata.vehicle, currentVehicleCode)
+    local modelType = nil
 
-  local indexMatches =
-    expected ~= nil
-    and (
-      actual ~= nil and actual == expected
-      or actualController ~= nil and actualController == expected
-    )
+    local okModel, result = pcall(function()
+      if core_vehicles
+        and core_vehicles.getModel
+        and modelKey ~= nil
+        and modelKey ~= "" then
+        return core_vehicles.getModel(modelKey)
+      end
+      return nil
+    end)
 
-  local nameMatches =
-    gearNameMatchesExpected(gear, expectedName)
-    or gearNameMatchesExpected(controllerGear, expectedName)
+    if okModel and type(result) == "table" then
+      -- BeamNG returns model metadata in result.model.
+      if type(result.model) == "table" then
+        modelType = firstNonEmpty(
+          result.model.Type,
+          result.model.type,
+          result.model.vehicleType,
+          result.model.category
+        )
+      end
+
+      modelType = firstNonEmpty(
+        modelType,
+        result.Type,
+        result.type,
+        result.vehicleType,
+        result.category
+      )
+    end
+
+    if modelType ~= nil and tostring(modelType) ~= "" then
+      metadata.vehicleType = tostring(modelType)
+      log("Vehicle type from GE model metadata (" ..
+          tostring(modelKey) .. "): " .. tostring(modelType))
+    else
+      log("GE model metadata did not provide a vehicle type for " ..
+          tostring(modelKey or "<unknown>"))
+    end
+  end
+
+  metadata.vehicleType = normalizeVehicleType(metadata.vehicleType)
+  metadata.transmission = normalizeTransmission(metadata.transmission, metadata.transmissionRaw)
+  metadata.gearLayout = normalizeGearLayout(metadata.gearLayout)
+  metadata.game = "BeamNG.drive"
+
+  currentVehicleCode = metadata.vehicle
+  currentConfigurationCode = metadata.configuration
+  currentPartConfig = safeToString(metadata.partConfig)
+  currentMetadata = metadata
+  metadataPendingVehicleId = nil
+  metadataRetriesLeft = 0
+
+  log("========================================")
+  log("VEHICLE METADATA")
+  log("========================================")
+  log("Vehicle ID = " .. tostring(vehicleId))
+  log("Game = BeamNG.drive")
+  log("Vehicle codename = " .. (metadata.vehicle ~= "" and metadata.vehicle or "<unknown>"))
+  log("Configuration codename = " .. (metadata.configuration ~= "" and metadata.configuration or "<unknown>"))
+  log("Part config = " .. safeToString(metadata.partConfig))
+  log("JBeam = " .. safeToString(metadata.jBeam))
+  log("Vehicle type = " .. (metadata.vehicleType ~= "" and metadata.vehicleType or "<unknown>"))
+  log("Transmission = " .. (metadata.transmission ~= "" and metadata.transmission or "<unknown>"))
+  log("Transmission raw = " .. safeToString(metadata.transmissionRaw))
+  log("Gearbox mode = " .. safeToString(metadata.gearboxMode))
+  log("Gear = " .. safeToString(metadata.gear))
+  log("Gear index = " .. safeToString(metadata.gearIndex))
+  log("Gear position = " .. safeToString(metadata.gearPosition))
+  log("Gear layout = " .. (metadata.gearLayout ~= "" and metadata.gearLayout or "<unknown>"))
+  log("Automatic modes = " .. safeToString(metadata.automaticModes))
+  log("========================================")
+  log("END VEHICLE METADATA")
+  log("========================================")
+
+  sendVehicleRequest(metadata, "metadata")
+  sendVehicleState(metadata, "metadata")
+end
+
+function M.receiveGearVerification(result)
+  if type(result) ~= "table" then return end
+  local vehicleId = tonumber(result.vehicleId)
+  if vehicleId == nil or vehicleId ~= currentVehicleId then return end
+
+  local expectedIndex = tonumber(result.expectedIndex)
+  local actualIndex = tonumber(result.gearIndex)
+  local controllerIndex = tonumber(result.controllerIndex)
+  local expectedName = safeToString(result.expectedName)
+  local actualGear = safeToString(result.gear)
+  local actualControllerGear = safeToString(result.controllerGear)
+
+  local indexMatches = expectedIndex ~= nil and (actualIndex == expectedIndex or controllerIndex == expectedIndex)
+  local normalizedExpected = string.upper(expectedName)
+  local normalizedActual = string.upper(actualGear)
+  local normalizedController = string.upper(actualControllerGear)
+  local aliases = { PARK="P", REVERSE="R", NEUTRAL="N", DRIVE="D", LOW="L" }
+  local nameMatches = normalizedActual == normalizedExpected
+    or normalizedController == normalizedExpected
+    or aliases[normalizedActual] == normalizedExpected
+    or aliases[normalizedController] == normalizedExpected
+    or aliases[normalizedExpected] == normalizedActual
+    or aliases[normalizedExpected] == normalizedController
+
+  log("SHIFT VERIFY: expected=" .. expectedName
+    .. " index=" .. tostring(expectedIndex)
+    .. " actualGear=" .. actualGear
+    .. " actualGearIndex=" .. tostring(result.gearIndex)
+    .. " controllerGear=" .. actualControllerGear
+    .. " controllerIndex=" .. tostring(result.controllerIndex)
+    .. " gearPosition=" .. safeToString(result.gearPosition))
 
   if indexMatches or nameMatches then
-    log(
-      "SHIFT CONFIRMED: "
-      .. tostring(expectedName)
-      .. " index="
-      .. tostring(expectedIndex)
-    )
-
-    if pendingShift ~= nil
-      and pendingShift.vehicleId == vehicleId
-      and tonumber(pendingShift.expectedIndex) == expected
-    then
-      pendingShift = nil
-    end
-  elseif pendingShift ~= nil
-    and pendingShift.vehicleId == vehicleId
-  then
-    log(
-      "SHIFT NOT YET CONFIRMED: expected="
-      .. tostring(pendingShift.expectedName)
-      .. " index="
-      .. tostring(pendingShift.expectedIndex)
-    )
+    log("SHIFT CONFIRMED: " .. expectedName .. " index=" .. tostring(expectedIndex))
+  else
+    log("SHIFT NOT CONFIRMED: requested shift did not change the authoritative vehicle gear.")
   end
-
-  lastVerifiedGearIndex = actual or actualController
-  lastVerifiedGearName = gear ~= "" and gear or controllerGear
 end
 
-local function handleVehicleChange(vehicleId)
-  log(
-    "Player vehicle changed: "
-    .. tostring(currentVehicleId)
-    .. " -> "
-    .. tostring(vehicleId)
-  )
+function M.receiveVehicleState(state)
+  if type(state) ~= "table" then return end
+  local vehicleId = tonumber(state.vehicleId)
+  if vehicleId == nil or vehicleId ~= currentVehicleId then return end
 
-  currentVehicleId = vehicleId
-  pendingShift = nil
-  lastVerifiedGearIndex = nil
-  lastVerifiedGearName = nil
+  state.transmission = normalizeTransmission(state.transmission, state.transmissionRaw)
+  currentState = state
+  sendVehicleState(state)
+end
 
-  if vehicleId == nil or vehicleId <= 0 then
-    log("No active player vehicle.")
-    return
-  end
+local function onUpdate(dtReal, dtSim, dtRaw)
+  if not initialized then return end
+  if udp == nil then initializeUDP() end
+  pollUdp()
+  updateHelperConnection(dtReal)
 
-  -- Vehicle changes are NOT a reason to skip the startup reacquire logic.
-  -- The helper owns the DirectInput reacquisition policy.
-  requestReacquire()
+  if metadataPendingVehicleId == nil or metadataRetriesLeft <= 0 then return end
+  metadataTimer = metadataTimer - (dtReal or 0)
+  if metadataTimer > 0 then return end
+  metadataTimer = METADATA_RETRY_INTERVAL
+  metadataRetriesLeft = metadataRetriesLeft - 1
 
-  -- Give the vehicle VM a little time to finish loading its controller.
-  core_jobsystem.create(function(job)
-    job.sleep(0.25)
-    if initialized and currentVehicleId == vehicleId then
-      requestVehicleMetadata("vehicle change")
-      sendVehicleProfile("vehicle change")
-    end
-  end)
+  local playerId = getPlayerVehicleId()
+  if playerId ~= metadataPendingVehicleId then return end
+  queueVehicleMetadataDiagnostic(metadataPendingVehicleId, "retry", false)
 end
 
 local function onVehicleSwitched(oldId, newId)
-  log(
-    "onVehicleSwitched: "
-    .. tostring(oldId)
-    .. " -> "
-    .. tostring(newId)
-  )
-  handleVehicleChange(newId)
+  log("onVehicleSwitched: " .. tostring(oldId) .. " -> " .. tostring(newId))
+  handleVehicleChange(newId, "switch")
 end
 
 local function onVehicleSpawned(vehicleId)
   log("onVehicleSpawned: " .. tostring(vehicleId))
-
-  local playerId = getPlayerVehicleId()
-  if playerId == vehicleId then
-    handleVehicleChange(vehicleId)
-  end
+  if getPlayerVehicleId() == vehicleId then handleVehicleChange(vehicleId, "spawn") end
 end
 
 local function onPlayerVehicleChanged(vehicleId)
   log("onPlayerVehicleChanged: " .. tostring(vehicleId))
-  handleVehicleChange(vehicleId)
-end
-
-local function pollUdp()
-  if udp == nil then
-    return
-  end
-
-  for _ = 1, 16 do
-    local ok, data = pcall(function()
-      return udp:receivefrom()
-    end)
-
-    if not ok or data == nil then
-      break
-    end
-
-    log("RX: " .. tostring(data))
-
-    local operation, a, b =
-      tostring(data):match("^([%w_]+)|([^|]*)|([^|]*)$")
-
-    if operation == "SHIFT" then
-      local zoneName = a
-      local index = tonumber(b)
-
-      if index == nil then
-        log("Invalid SHIFT index: " .. tostring(b))
-      else
-        queueGearShift(zoneName, index)
-      end
-    elseif tostring(data):match("^SHIFT|") then
-      local parts = {}
-      for part in tostring(data):gmatch("[^|]+") do
-        parts[#parts + 1] = part
-      end
-
-      local zoneName = parts[2]
-      local index = tonumber(parts[3])
-
-      if zoneName == nil or index == nil then
-        log("Malformed SHIFT command: " .. tostring(data))
-      else
-        queueGearShift(zoneName, index)
-      end
-    elseif data == "PING" then
-      sendCommand("PONG")
-    elseif data == "REQUEST_PROFILE" then
-      sendVehicleProfile("helper request")
-    elseif data == "REQUEST_METADATA" then
-      requestVehicleMetadata("helper request")
-    end
-  end
-end
-
-local function onUpdate(dtReal, dtSim, dtRaw)
-  if not initialized then
-    return
-  end
-
-  if udp == nil then
-    initializeUDP()
-  end
-
-  pollUdp()
-  pollShiftVerification()
-
-  -- Keep the helper informed of the active player vehicle even if a game
-  -- event was missed during startup.
-  local playerId = getPlayerVehicleId()
-  if playerId ~= nil and playerId ~= currentVehicleId then
-    handleVehicleChange(playerId)
-  end
+  handleVehicleChange(vehicleId, "player-change")
 end
 
 local function onExtensionLoaded()
-  if initialized then
-    return
-  end
-
+  if initialized then return end
   initialized = true
   log("Extension initialized.")
   initializeUDP()
 
-  -- Startup reacquisition is deliberately retained. The game can load
-  -- after the helper, and BeamNG can take the DirectInput interface during
-  -- startup. The helper must be allowed to reacquire it.
   core_jobsystem.create(function(job)
     local elapsed = 0
-
     while initialized and elapsed < 30 do
       local vehicleId = getPlayerVehicleId()
-
       if vehicleId ~= nil then
         log("Initial player vehicle detected: " .. tostring(vehicleId))
-        handleVehicleChange(vehicleId)
+        handleVehicleChange(vehicleId, "startup")
         return
       end
-
       job.sleep(0.5)
       elapsed = elapsed + 0.5
     end
-
-    if initialized then
-      log("No player vehicle detected during startup search.")
-    end
+    if initialized then log("No player vehicle detected during startup search.") end
   end)
 end
 
 local function onExtensionUnloaded()
   log("Extension unloading.")
-
   initialized = false
   currentVehicleId = nil
-  pendingShift = nil
-
-  if udp ~= nil then
-    pcall(function()
-      udp:close()
-    end)
-  end
-
+  currentMetadata = nil
+  currentState = nil
+  if udp ~= nil then pcall(function() udp:close() end) end
   udp = nil
   socket = nil
 end
@@ -833,6 +603,5 @@ M.onUpdate = onUpdate
 M.onVehicleSwitched = onVehicleSwitched
 M.onVehicleSpawned = onVehicleSpawned
 M.onPlayerVehicleChanged = onPlayerVehicleChanged
-M.onGearState = onGearState
 
 return M
