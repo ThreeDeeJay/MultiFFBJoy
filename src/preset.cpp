@@ -360,16 +360,26 @@ void ApplyVehicleStateImpl(const VehicleState& state)
     int index = -1;
     {
         std::lock_guard<std::mutex> lock(g_presetMutex);
-        g_vehicleState = state;
-        g_vehicleStateValid = true;
-        for (size_t i = 0; i < g_loadedPreset.forceFields.size(); ++i)
+
+        if (g_loadedPreset.forceFields.size() == 1)
         {
-            if (GearMatchesField(g_loadedPreset.forceFields[i], state))
+        // A single-zone preset has no gear selector.
+        // Always use its only forcefield.
+            selected = g_loadedPreset.forceFields.front();
+            index = 0;
+            found = true;
+        }
+        else
+        {
+            for (size_t i = 0; i < g_loadedPreset.forceFields.size(); ++i)
             {
-                selected = g_loadedPreset.forceFields[i];
-                index = static_cast<int>(i);
-                found = true;
-                break;
+                if (GearMatchesField(g_loadedPreset.forceFields[i], state))
+                {
+                    selected = g_loadedPreset.forceFields[i];
+                    index = static_cast<int>(i);
+                    found = true;
+                    break;
+                }
             }
         }
     }
@@ -381,15 +391,30 @@ void ApplyVehicleStateImpl(const VehicleState& state)
         return;
     }
 
-    Logf("Vehicle gear state -> zone \"%s\" (index=%d, gear=%s, gearIndex=%d).",
-         selected.name.c_str(), index, state.gear.c_str(), state.gearIndex);
+    if (g_loadedPreset.forceFields.size() == 1)
+    {
+        Logf("Using single-zone forcefield \"%s\".",
+           selected.name.c_str());
+    }
+    else
+    {
+        Logf("Vehicle gear state -> zone \"%s\" (index=%d, gear=%s, gearIndex=%d).",
+           selected.name.c_str(),
+           index,
+           state.gear.c_str(),
+           state.gearIndex);
+    }
+
     if (selected.forceType != 1)
     {
         StopSpring();
         return;
     }
     if (!SetSpringForceField(selected))
-        Logf("Failed to apply vehicle-state forcefield \"%s\".", selected.name.c_str());
+    {
+        Logf("Failed to apply vehicle-state forcefield \"%s\".",
+           selected.name.c_str());
+    }
 }
 
 void ClearVehicleStateImpl()

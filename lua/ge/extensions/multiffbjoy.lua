@@ -47,7 +47,9 @@ local function firstNonEmpty(...)
     local value = select(i, ...)
     if value ~= nil then
       local text = tostring(value)
-      if text ~= "" then return value end
+      if text ~= "" then
+        return value
+      end
     end
   end
   return nil
@@ -359,22 +361,46 @@ function M.receiveVehicleMetadata(metadata)
   -- manager does, however, expose model metadata for the active vehicle.
   -- Use it as the authoritative type fallback (Car, Aircraft, Truck, etc.).
   if safeToString(metadata.vehicleType) == "" then
+    local modelKey = firstNonEmpty(metadata.vehicle, currentVehicleCode)
     local modelType = nil
-    local okModel, modelData = pcall(function()
-      if core_vehicles and core_vehicles.getModel then
-        return core_vehicles.getModel(vehicleId)
+
+    local okModel, result = pcall(function()
+      if core_vehicles
+        and core_vehicles.getModel
+        and modelKey ~= nil
+        and modelKey ~= "" then
+        return core_vehicles.getModel(modelKey)
       end
       return nil
     end)
-    if okModel and type(modelData) == "table" then
-      if type(modelData.model) == "table" then
-        modelType = firstNonEmpty(modelData.model.Type, modelData.model.type, modelData.model.vehicleType)
+
+    if okModel and type(result) == "table" then
+      -- BeamNG returns model metadata in result.model.
+      if type(result.model) == "table" then
+        modelType = firstNonEmpty(
+          result.model.Type,
+          result.model.type,
+          result.model.vehicleType,
+          result.model.category
+        )
       end
-      modelType = firstNonEmpty(modelType, modelData.Type, modelData.type, modelData.vehicleType)
+
+      modelType = firstNonEmpty(
+        modelType,
+        result.Type,
+        result.type,
+        result.vehicleType,
+        result.category
+      )
     end
-    if modelType ~= nil then
-      metadata.vehicleType = modelType
-      log("Vehicle type from GE model metadata: " .. tostring(modelType))
+
+    if modelType ~= nil and tostring(modelType) ~= "" then
+      metadata.vehicleType = tostring(modelType)
+      log("Vehicle type from GE model metadata (" ..
+          tostring(modelKey) .. "): " .. tostring(modelType))
+    else
+      log("GE model metadata did not provide a vehicle type for " ..
+          tostring(modelKey or "<unknown>"))
     end
   end
 
