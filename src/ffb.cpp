@@ -328,10 +328,22 @@ bool SetConstantForceField(const ForceField& forceField)
 
     DWORD axes[2] = {DIJOFS_X, DIJOFS_Y};
     LONG direction[2] = {x, y};
-    const LONG magnitude = static_cast<LONG>(std::min<long long>(
-        DI_FFNOMINALMAX,
-        static_cast<long long>(std::sqrt(
-            static_cast<double>(x) * x + static_cast<double>(y) * y))));
+    const double length = std::sqrt(
+        static_cast<double>(x) * x + static_cast<double>(y) * y);
+    if (length <= 0.0)
+    {
+        StopTestConstantForce();
+        return false;
+    }
+
+    // DirectInput expects a direction vector plus a scalar magnitude. Normalize
+    // the requested vector so the sign/direction is preserved without shrinking
+    // the actual force just because the vector is diagonal.
+    direction[0] = static_cast<LONG>(std::lround(
+        static_cast<double>(x) * DI_FFNOMINALMAX / length));
+    direction[1] = static_cast<LONG>(std::lround(
+        static_cast<double>(y) * DI_FFNOMINALMAX / length));
+    const LONG magnitude = DI_FFNOMINALMAX;
 
     DICONSTANTFORCE force{};
     force.lMagnitude = magnitude;

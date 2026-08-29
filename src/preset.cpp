@@ -19,6 +19,7 @@ namespace
 {
 std::atomic<bool> g_presetTestRunning{false};
 std::thread g_presetTestThread;
+void PresetMonitorThread();
 
 std::string Trim(const std::string& value)
 {
@@ -458,7 +459,31 @@ void ApplyVehicleStateImpl(const VehicleState& state)
         StopSpring();
     }
 
-    TriggerZoneGearSelection(selected, state);
+    // Start physical zone monitoring only after the initial state has been
+    // applied and the optional one-second startup transition has completed.
+    if (!g_presetTestRunning.load(std::memory_order_acquire))
+    {
+        {
+            std::lock_guard<std::mutex> monitorLock(g_presetMutex);
+            g_presetTestState.enabled = true;
+            g_presetTestState.activeForceField = index;
+            g_presetTestState.normalizedX = 0.0f;
+            g_presetTestState.normalizedY = 0.0f;
+        }
+        g_presetTestRunning.store(true, std::memory_order_release);
+        try
+        {
+            g_presetTestThread = std::thread(PresetMonitorThread);
+        }
+        catch (const std::exception& error)
+        {
+            g_presetTestRunning.store(false, std::memory_order_release);
+            Logf("Failed to start preset monitor: %s", error.what());
+        }
+    }
+
+    // Do not command a gear merely because telemetry arrived. Gear changes are
+    // initiated by entering a physical FFB zone in UpdatePresetTest().
 }
 
 void ClearVehicleStateImpl()

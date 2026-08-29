@@ -394,9 +394,13 @@ bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request)
     Logf("Profile source: %s", profile.sourcePath.c_str());
     ClearForceFieldPreset();
     if (!LoadForceFieldPreset(profile.presetPath))
-        return false;
-    StartPresetTest();
-    // The live STATE packet will establish the initial vehicle state.
+    {
+        Log("Failed to load resolved preset; using basic centering.");
+        ClearForceFieldPreset();
+        return SetSpringStrength(1.0f);
+    }
+    // The live STATE packet establishes the initial vehicle state and performs
+    // the one-second startup transition before physical zone monitoring begins.
     return true;
 }
 } // namespace MultiFFBJoy

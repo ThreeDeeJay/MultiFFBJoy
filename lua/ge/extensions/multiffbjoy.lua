@@ -143,7 +143,14 @@ local function pollUdp()
       local zoneName, gearIndex = data:match("^SHIFT|([^|]*)|(-?%d+)$")
       local index = tonumber(gearIndex)
       if index ~= nil then
-        local vehicle = getPlayerVehicle()
+        -- Resolve the active vehicle by ID rather than calling the GE helper
+        -- with a nil player object during vehicle-switch/reload frames.
+        local vehicleId = getPlayerVehicleId()
+        local vehicle = nil
+        if vehicleId ~= nil and be ~= nil and be.getObjectByID then
+          local okVehicle, result = pcall(function() return be:getObjectByID(vehicleId) end)
+          if okVehicle then vehicle = result end
+        end
         if vehicle ~= nil then
           local command = string.format(
             "local c=controller.getController('main'); if c and c.shiftToGearIndex then c.shiftToGearIndex(%d) end",
@@ -154,6 +161,8 @@ local function pollUdp()
           else
             log("FFB zone gear command failed: " .. tostring(err))
           end
+        else
+          log("FFB zone gear command skipped: active vehicle is not available.")
         end
       end
     elseif data == "ACK|VEHICLE" then
@@ -352,7 +361,6 @@ local function handleVehicleChange(vehicleId, reason)
     currentState = nil
     lastVehicleCommandSignature = nil
     lastStateCommandSignature = nil
-    requestReacquire()
     queueVehicleMetadataDiagnostic(vehicleId, reason, true)
   elseif metadataPendingVehicleId == nil then
     -- Ignore duplicate switch/startup callbacks once this vehicle is known.
