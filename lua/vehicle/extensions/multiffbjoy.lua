@@ -163,18 +163,41 @@ end
 
 local function getAutomaticModes(gearbox)
   local values = electrics and electrics.values or nil
+  local mainController = controller and safeValue(controller, "mainController") or nil
+
+  -- automaticModes is a vehicleController/shift-logic property, not a
+  -- powertrain gearbox-device property.
   local candidates = {
-    safeValue(gearbox, "availableModes"), safeValue(gearbox, "automaticModes"),
-    safeValue(gearbox, "shiftModes"), safeValue(gearbox, "modes"),
-    safeValue(gearbox, "gearboxModes"), safeValue(values, "automaticModes")
+    safeValue(mainController, "automaticModes"),
+    safeValue(mainController, "availableModes"),
+    safeValue(mainController, "shiftModes"),
+    safeValue(mainController, "modes"),
+    safeValue(gearbox, "automaticModes"),
+    safeValue(gearbox, "availableModes"),
+    safeValue(values, "automaticModes"),
   }
+
   for _, value in ipairs(candidates) do
-    if type(value) == "string" and value ~= "" then return value end
-    if type(value) == "table" then
+    if type(value) == "string" and value ~= "" then
+      return value
+    elseif type(value) == "table" then
       local text = shallowStringifyTable(value, 32)
       if text ~= "" then return text end
     end
   end
+
+  -- Last fallback: the vehicleController JBeam data.
+  local ok, data = pcall(function()
+    if type(jbeamData) == "table" then
+      return jbeamData.automaticModes
+    end
+    return nil
+  end)
+
+  if ok and data ~= nil then
+    return stringify(data)
+  end
+
   return ""
 end
 
@@ -287,8 +310,14 @@ local function sendStateIfChanged()
   if not metadataSent then return end
   local metadata = buildMetadata()
   local signature = table.concat({
-    tostring(metadata.vehicleId), metadata.gear, metadata.gearIndex,
-    metadata.gearboxMode, metadata.gearPosition, metadata.transmissionRaw
+    tostring(metadata.vehicleId),
+    metadata.gear,
+    metadata.gearIndex,
+    metadata.gearboxMode,
+    metadata.gearPosition,
+    metadata.transmissionRaw,
+    metadata.automaticModes,
+    metadata.gearLayout
   }, "|")
   if signature == lastStateSignature then return end
   lastStateSignature = signature

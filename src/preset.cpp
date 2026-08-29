@@ -287,6 +287,28 @@ int ExtractFirstInteger(const std::string& value)
     return found ? number : -1;
 }
 
+int AutomaticModeIndex(const std::string& modes, const std::string& fieldName)
+{
+    if (modes.empty() || fieldName.empty())
+        return -1;
+
+    const std::string target = NormalizeGearToken(fieldName);
+
+    for (size_t i = 0; i < modes.size(); ++i)
+    {
+        std::string mode(1, modes[i]);
+
+        // Ignore separators occasionally used by custom configurations.
+        if (!std::isalnum(static_cast<unsigned char>(modes[i])))
+            continue;
+
+        if (NormalizeGearToken(mode) == target)
+            return static_cast<int>(i);
+    }
+
+    return -1;
+}
+
 bool GearMatchesField(const ForceField& field, const VehicleState& state)
 {
     const std::string gear = NormalizeGearToken(state.gear);
@@ -348,6 +370,67 @@ bool GearMatchesField(const ForceField& field, const VehicleState& state)
     return !gear.empty() && gear == name;
 }
 
+bool SetConstantForceField(const ForceField& forceField)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_ffbMutex);
+
+    if (!g_ffbDevice || !g_testConstantEffect)
+        return false;
+
+    LONG x = ClampFFB(forceField.offsetX);
+    LONG y = ClampFFB(forceField.offsetY);
+
+    if (x == 0 && y == 0)
+    {
+        // A constant-force field with no explicit offset should still push
+        // toward its configured equilibrium.
+        x = ClampFFB(forceField.centerX);
+        y = ClampFFB(forceField.centerY);
+    }
+
+    const LONG magnitude = static_cast<LONG>(std::min<long long>(
+        DI_FFNOMINALMAX,
+        static_cast<long long>(std::sqrt(
+            static_cast<double>(x) * x +
+            static_cast<double>(y) * y))));
+
+    DWORD axes[2] = {DIJOFS_X, DIJOFS_Y};
+    LONG direction[2] = {x, y};
+
+    DICONSTANTFORCE force{};
+    force.lMagnitude = magnitude;
+
+    DIEFFECT effect{};
+    effect.dwSize = sizeof(effect);
+    effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+    effect.dwDuration = INFINITE;
+    effect.dwGain = DI_FFNOMINALMAX;
+    effect.dwTriggerButton = DIEB_NOTRIGGER;
+    effect.cAxes = 2;
+    effect.rgdwAxes = axes;
+    effect.rglDirection = direction;
+    effect.cbTypeSpecificParams = sizeof(force);
+    effect.lpvTypeSpecificParams = &force;
+
+    HRESULT hr = g_testConstantEffect->SetParameters(
+        &effect,
+        DIEP_DIRECTION | DIEP_TYPESPECIFICPARAMS);
+
+    if (FAILED(hr))
+        return false;
+
+    StopEffect(g_springEffect, "Spring");
+
+    hr = g_testConstantEffect->Start(1, 0);
+    if (FAILED(hr))
+        return false;
+
+    Logf("Constant-force zone applied: \"%s\" force=(%ld,%ld).",
+         forceField.name.c_str(), x, y);
+
+    return true;
+}
+
 void ApplyVehicleStateImpl(const VehicleState& state)
 {
     if (!IsForceFieldPresetLoaded())
@@ -405,15 +488,43 @@ void ApplyVehicleStateImpl(const VehicleState& state)
            state.gearIndex);
     }
 
-    if (selected.forceType != 1)
+    bool applied = false;
+
+    if (selected.forceType == 1)
     {
+        applied = SetSpringForceField(selected);
+    }
+    else if (selected.forceType == 2)
+    {
+        applied = SetConstantForceField(selected);
+    }
+    else
+    {
+        Logf("Unsupported force type %d for zone \"%s\".",
+             selected.forceType, selected.name.c_str());
         StopSpring();
         return;
     }
-    if (!SetSpringForceField(selected))
+
+    if (!applied)
     {
         Logf("Failed to apply vehicle-state forcefield \"%s\".",
-           selected.name.c_str());
+             selected.name.c_str());
+    }
+
+    const int automaticIndex =
+        AutomaticModeIndex(state.automaticModes, selected.name);
+
+    if (automaticIndex >= 0)
+    {
+        SendGearSelectionToLua(selected.name, automaticIndex);
+    }
+    else
+    {
+        const int numericGear = ExtractFirstInteger(selected.name);
+
+        if (numericGear >= 0)
+            SendGearSelectionToLua(selected.name, numericGear);
     }
 }
 

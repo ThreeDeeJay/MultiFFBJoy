@@ -402,4 +402,10 @@ void SendUdpCommand(const std::string& command)
     else
         Logf("TX: %s", command.c_str());
 }
+
+void SendGearSelectionToLua(const std::string& zone, int index)
+{
+    std::string command = "SHIFT|" + zone + "|" + std::to_string(index);
+    SendUdpReply(command);
+}
 } // namespace MultiFFBJoy

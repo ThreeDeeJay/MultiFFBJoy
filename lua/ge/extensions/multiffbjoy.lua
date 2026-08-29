@@ -138,6 +138,9 @@ local function pollUdp()
       timeSinceHelperAck = 0
     elseif data == "ACK|STATE" then
       timeSinceHelperAck = 0
+    elseif data:sub(1, 6) == "SHIFT|" then
+      local zone, index = data:match("^SHIFT|([^|]*)|?(.*)$")
+      executeGearSelection(zone, index)
     end
   end
 end
@@ -264,6 +267,50 @@ sendVehicleState = function(state, reason)
     .. " gearIndex=" .. (gearIndex ~= "" and gearIndex or "<unknown>")
     .. " position=" .. (gearPosition ~= "" and gearPosition or "<unknown>"))
   return sendCommand(command, true)
+end
+
+local function executeGearSelection(zoneName, requestedIndex)
+  local vehicle = getPlayerVehicle()
+  if vehicle == nil then
+    log("Cannot execute FFB gear selection: no player vehicle.")
+    return false
+  end
+
+  local index = tonumber(requestedIndex)
+  local name = safeToString(zoneName)
+
+  local command = nil
+
+  if index ~= nil then
+    command = string.format(
+      "local c=controller.getController('main'); if c and c.shiftToGearIndex then c.shiftToGearIndex(%d) end",
+      math.floor(index)
+    )
+  elseif name ~= "" then
+    local escaped = string.format("%q", name)
+    command = string.format(
+      "local c=controller.getController('main'); if c and c.getGearName and c.shiftToGearIndex then local n=c.getGearName(); if n==%s then return end end",
+      escaped
+    )
+  end
+
+  if command == nil then
+    log("FFB gear selection has no usable index.")
+    return false
+  end
+
+  local ok, err = pcall(function()
+    vehicle:queueLuaCommand(command)
+  end)
+
+  if not ok then
+    log("Failed to queue FFB gear selection: " .. tostring(err))
+    return false
+  end
+
+  log("FFB zone gear selection queued: " .. name ..
+      (index ~= nil and (" -> index " .. tostring(math.floor(index))) or ""))
+  return true
 end
 
 local function queueVehicleMetadataDiagnostic(vehicleId, reason, resetRetries)
