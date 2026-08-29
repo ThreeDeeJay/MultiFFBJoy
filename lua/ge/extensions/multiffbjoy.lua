@@ -152,15 +152,31 @@ local function pollUdp()
           if okVehicle then vehicle = resultVehicle end
         end
         if vehicle ~= nil then
-          local command = string.format(
-            "local c=controller.getController('main'); if c and c.shiftToGearIndex then c.shiftToGearIndex(%d) end",
-            math.floor(index))
+          local safeZone = tostring(zoneName):gsub("\\", "\\\\"):gsub("%[", "\\["):gsub("%]", "\\]")
+          local command = string.format([[
+            local c = controller and controller.mainController
+            if c == nil and controller and controller.getController then
+              c = controller.getController("main")
+            end
+            local idx = %d
+            local ok, err = false, "controller unavailable"
+            if c and type(c.shiftToGearIndex) == "function" then
+              ok, err = pcall(function() c:shiftToGearIndex(idx) end)
+            end
+            if not ok then
+              print("[MultiFFBJoy] SHIFT %s index=%d failed: " .. tostring(err))
+            else
+              print("[MultiFFBJoy] SHIFT %s index=%d applied")
+            end
+          ]], math.floor(index), safeZone, math.floor(index))
           local ok, err = pcall(function() vehicle:queueLuaCommand(command) end)
           if ok then
-            log("FFB zone gear command: " .. tostring(zoneName) .. " -> index " .. tostring(index))
+            log("FFB zone gear command queued: " .. tostring(zoneName) .. " -> index " .. tostring(index))
           else
             log("FFB zone gear command failed: " .. tostring(err))
           end
+        else
+          log("FFB zone gear command skipped: player vehicle unavailable (" .. tostring(zoneName) .. ")")
         end
       end
     elseif data == "ACK|VEHICLE" then

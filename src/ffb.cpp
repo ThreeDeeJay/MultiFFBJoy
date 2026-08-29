@@ -79,8 +79,13 @@ bool ApplySpringParameters(LONG centerX, LONG centerY,
         &effect, DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION);
     if (FAILED(hr))
     {
-        Logf("SetParameters(Spring) failed: 0x%08lX",
-             static_cast<unsigned long>(hr));
+        // BeamNG/DirectInput can briefly own the exclusive FFB interface while
+        // a vehicle or input device is being initialized.  0x80040205 is
+        // DIERR_NOTEXCLUSIVEACQUIRED and is handled by the caller's normal
+        // reacquire path; do not report it as a persistent Spring failure.
+        if (!IsExpectedDeviceError(hr))
+            Logf("SetParameters(Spring) failed: 0x%08lX",
+                 static_cast<unsigned long>(hr));
         return false;
     }
 
