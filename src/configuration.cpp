@@ -395,12 +395,12 @@ bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request)
     ClearForceFieldPreset();
     if (!LoadForceFieldPreset(profile.presetPath))
     {
-        Log("Failed to load resolved preset; using basic centering.");
+        Log("Failed to load resolved FFB profile; using basic centering.");
         ClearForceFieldPreset();
         return SetSpringStrength(1.0f);
     }
-    // The live STATE packet establishes the initial vehicle state and performs
-    // the one-second startup transition before physical zone monitoring begins.
+    StartPresetTest();
+    // The live STATE packet will establish the initial vehicle state.
     return true;
 }
 } // namespace MultiFFBJoy

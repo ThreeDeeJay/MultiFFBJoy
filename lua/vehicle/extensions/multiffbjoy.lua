@@ -175,23 +175,13 @@ end
 local function getAutomaticModes(gearbox)
   local values = electrics and electrics.values or nil
   local mainController = controller and safeValue(controller, "mainController") or nil
-  local shiftLogic = firstNonEmpty(
-    safeValue(mainController, "shiftLogic"),
-    safeValue(mainController, "shiftLogicController"),
-    safeValue(gearbox, "shiftLogic")
-  )
   local controllerConfig = firstNonEmpty(
-    safeValue(mainController, "jbeamData"),
-    safeValue(mainController, "data"),
     safeValue(jbeamData, "vehicleController"),
     safeValue(v and v.data, "vehicleController")
   )
 
   local candidates = {
-    safeValue(shiftLogic, "automaticModes"),
-    safeValue(shiftLogic, "availableModes"),
     safeValue(controllerConfig, "automaticModes"),
-    safeValue(controllerConfig, "availableModes"),
     safeValue(jbeamData, "automaticModes"),
     safeValue(v and v.data, "automaticModes"),
     safeValue(mainController, "automaticModes"),
@@ -213,20 +203,11 @@ local function getAutomaticModes(gearbox)
 end
 
 local function getDefaultAutomaticMode()
-  local mainController = controller and safeValue(controller, "mainController") or nil
-  local shiftLogic = firstNonEmpty(
-    safeValue(mainController, "shiftLogic"),
-    safeValue(mainController, "shiftLogicController")
-  )
   local controllerConfig = firstNonEmpty(
-    safeValue(mainController, "jbeamData"),
-    safeValue(mainController, "data"),
     safeValue(jbeamData, "vehicleController"),
     safeValue(v and v.data, "vehicleController")
   )
   return stringify(firstNonEmpty(
-    safeValue(shiftLogic, "defaultAutomaticMode"),
-    safeValue(shiftLogic, "defaultForwardMode"),
     safeValue(controllerConfig, "defaultAutomaticMode"),
     safeValue(controllerConfig, "defaultAutomaticForwardMode")
   ))

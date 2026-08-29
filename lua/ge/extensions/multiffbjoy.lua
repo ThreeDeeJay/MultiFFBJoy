@@ -32,6 +32,7 @@ local lastVehicleCommandSignature = nil
 local lastStateCommandSignature = nil
 local sendVehicleRequest = nil
 local sendVehicleState = nil
+local queueVehicleMetadataDiagnostic = nil
 
 local function log(message)
   print("[MultiFFBJoy] " .. tostring(message))
@@ -132,24 +133,23 @@ local function pollUdp()
       log("FFB helper requested vehicle/profile synchronization.")
       lastVehicleCommandSignature = nil
       lastStateCommandSignature = nil
-      if currentMetadata ~= nil then
+      if currentVehicleId ~= nil then
+        queueVehicleMetadataDiagnostic(currentVehicleId, "helper sync", true)
+      elseif currentMetadata ~= nil then
         sendVehicleRequest(currentMetadata, "helper sync")
-      end
-      if currentState ~= nil then
-        sendVehicleState(currentState, "helper sync")
+        if currentState ~= nil then
+          sendVehicleState(currentState, "helper sync")
+        end
       end
     elseif data:sub(1, 6) == "SHIFT|" then
       timeSinceHelperAck = 0
       local zoneName, gearIndex = data:match("^SHIFT|([^|]*)|(-?%d+)$")
       local index = tonumber(gearIndex)
       if index ~= nil then
-        -- Resolve the active vehicle by ID rather than calling the GE helper
-        -- with a nil player object during vehicle-switch/reload frames.
-        local vehicleId = getPlayerVehicleId()
         local vehicle = nil
-        if vehicleId ~= nil and be ~= nil and be.getObjectByID then
-          local okVehicle, result = pcall(function() return be:getObjectByID(vehicleId) end)
-          if okVehicle then vehicle = result end
+        if be ~= nil then
+          local okVehicle, resultVehicle = pcall(function() return be:getPlayerVehicle(0) end)
+          if okVehicle then vehicle = resultVehicle end
         end
         if vehicle ~= nil then
           local command = string.format(
@@ -161,8 +161,6 @@ local function pollUdp()
           else
             log("FFB zone gear command failed: " .. tostring(err))
           end
-        else
-          log("FFB zone gear command skipped: active vehicle is not available.")
         end
       end
     elseif data == "ACK|VEHICLE" then
@@ -298,7 +296,7 @@ sendVehicleState = function(state, reason)
   return sendCommand(command, true)
 end
 
-local function queueVehicleMetadataDiagnostic(vehicleId, reason, resetRetries)
+queueVehicleMetadataDiagnostic = function(vehicleId, reason, resetRetries)
   local vehicle = getPlayerVehicle()
   if vehicle == nil then
     log("Cannot queue VLUA metadata diagnostic; no player vehicle object.")

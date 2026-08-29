@@ -212,6 +212,20 @@ bool IsFFBDeviceUsable()
     std::lock_guard<std::recursive_mutex> lock(g_ffbMutex);
     if (!g_ffbDevice)
         return false;
+
+    // Re-assert our DirectInput acquisition.  GetDeviceState() can still
+    // succeed in some drivers even after another application has taken the
+    // exclusive FFB interface, while effect download then fails with
+    // DIERR_NOTEXCLUSIVEACQUIRED (0x80040205).
+    HRESULT acquireHr = g_ffbDevice->Acquire();
+    if (FAILED(acquireHr) && acquireHr != DI_NOEFFECT)
+    {
+        if (!IsExpectedDeviceError(acquireHr))
+            Logf("FFB device Acquire() failed: 0x%08lX",
+                 static_cast<unsigned long>(acquireHr));
+        return false;
+    }
+
     DIJOYSTATE2 state{};
     const HRESULT hr = g_ffbDevice->GetDeviceState(sizeof(state), &state);
     if (SUCCEEDED(hr))
@@ -259,7 +273,17 @@ bool SetSpringStrength(float strength)
         std::lround(strength * static_cast<float>(DI_FFNOMINALMAX)));
 
     if (!ApplySpringParameters(0, 0, -coefficient, -coefficient, true))
-        return false;
+    {
+        if (!g_reacquiring.load(std::memory_order_acquire) && ReacquireFFBDevice())
+        {
+            if (!ApplySpringParameters(0, 0, -coefficient, -coefficient, true))
+                return false;
+        }
+        else
+        {
+            return false;
+        }
+    }
 
     g_activeSpring.active = strength > 0.0f;
     g_activeSpring.forceField = false;
@@ -284,7 +308,17 @@ bool SetSpringForceField(const ForceField& forceField)
                                  coefficientX, coefficientY);
 
     if (!ApplySpringParameters(centerX, centerY, coefficientX, coefficientY, true))
-        return false;
+    {
+        if (!g_reacquiring.load(std::memory_order_acquire) && ReacquireFFBDevice())
+        {
+            if (!ApplySpringParameters(centerX, centerY, coefficientX, coefficientY, true))
+                return false;
+        }
+        else
+        {
+            return false;
+        }
+    }
 
     g_activeSpring.active = true;
     g_activeSpring.forceField = true;
@@ -327,23 +361,14 @@ bool SetConstantForceField(const ForceField& forceField)
     }
 
     DWORD axes[2] = {DIJOFS_X, DIJOFS_Y};
-    LONG direction[2] = {x, y};
     const double length = std::sqrt(
         static_cast<double>(x) * x + static_cast<double>(y) * y);
-    if (length <= 0.0)
-    {
-        StopTestConstantForce();
-        return false;
-    }
-
-    // DirectInput expects a direction vector plus a scalar magnitude. Normalize
-    // the requested vector so the sign/direction is preserved without shrinking
-    // the actual force just because the vector is diagonal.
-    direction[0] = static_cast<LONG>(std::lround(
-        static_cast<double>(x) * DI_FFNOMINALMAX / length));
-    direction[1] = static_cast<LONG>(std::lround(
-        static_cast<double>(y) * DI_FFNOMINALMAX / length));
-    const LONG magnitude = DI_FFNOMINALMAX;
+    const LONG magnitude = static_cast<LONG>(std::min<double>(
+        DI_FFNOMINALMAX, length));
+    LONG direction[2] = {
+        static_cast<LONG>(std::lround((static_cast<double>(x) / length) * DI_FFNOMINALMAX)),
+        static_cast<LONG>(std::lround((static_cast<double>(y) / length) * DI_FFNOMINALMAX))
+    };
 
     DICONSTANTFORCE force{};
     force.lMagnitude = magnitude;
@@ -361,12 +386,22 @@ bool SetConstantForceField(const ForceField& forceField)
 
     StopEffect(g_springEffect, "Spring");
     HRESULT hr = g_testConstantEffect->SetParameters(
-        &effect, DIEP_DIRECTION | DIEP_TYPESPECIFICPARAMS);
+        &effect, DIEP_DIRECTION | DIEP_TYPESPECIFICPARAMS | DIEP_START);
     if (FAILED(hr))
     {
         Logf("SetParameters(ConstantForce) failed: 0x%08lX",
              static_cast<unsigned long>(hr));
-        return false;
+        if (!g_reacquiring.load(std::memory_order_acquire) && ReacquireFFBDevice())
+        {
+            hr = g_testConstantEffect->SetParameters(
+                &effect, DIEP_DIRECTION | DIEP_TYPESPECIFICPARAMS | DIEP_START);
+            if (FAILED(hr))
+                return false;
+        }
+        else
+        {
+            return false;
+        }
     }
     hr = g_testConstantEffect->Start(1, 0);
     if (FAILED(hr))
@@ -426,6 +461,8 @@ bool MoveStickToForceFieldCenterOverTime(const ForceField& forceField, DWORD dur
         const LONG y = static_cast<LONG>(std::lround(
             startY + (targetY - startY) * smooth));
 
+        if (!EnsureFFBDeviceReady())
+            return false;
         std::lock_guard<std::recursive_mutex> lock(g_ffbMutex);
         if (!g_ffbDevice || !g_springEffect)
             return false;
@@ -555,11 +592,6 @@ bool ReacquireFFBDevice()
         UpdateStatus();
 
         Log("FFB device is exclusively acquired and usable.");
-        if (!RestoreActiveSpring())
-            Log("Warning: active spring could not be restored after acquisition.");
-        else if (g_activeSpring.active)
-            Log("Active spring restored after FFB re-acquisition.");
-
         return true;
     }
 
@@ -606,17 +638,37 @@ void StartFFBWatchdog()
         {
         Log("FFB watchdog thread started.");
         int failures = 0;
+        int noDeviceTicks = 0;
         while (g_running)
         {
+            bool haveDevice = false;
             {
                 std::lock_guard<std::recursive_mutex> lock(g_ffbMutex);
-                if (g_reacquiring.load(std::memory_order_acquire) || !g_ffbDevice)
-                {
-                    failures = 0;
-                    Sleep(WATCHDOG_INTERVAL_MS);
-                    continue;
-                }
+                haveDevice = g_ffbDevice != nullptr;
             }
+
+            if (g_reacquiring.load(std::memory_order_acquire))
+            {
+                failures = 0;
+                noDeviceTicks = 0;
+                Sleep(WATCHDOG_INTERVAL_MS);
+                continue;
+            }
+
+            if (!haveDevice)
+            {
+                // Initial acquisition may fail because BeamNG has not yet
+                // released/created the FFB device. Keep retrying quietly.
+                if (++noDeviceTicks >= 10)
+                {
+                    noDeviceTicks = 0;
+                    if (ReacquireFFBDevice())
+                        RestoreActiveSpring();
+                }
+                Sleep(WATCHDOG_INTERVAL_MS);
+                continue;
+            }
+            noDeviceTicks = 0;
 
             if (IsFFBDeviceUsable())
             {
@@ -625,7 +677,8 @@ void StartFFBWatchdog()
             else if (++failures >= WATCHDOG_FAILURES_BEFORE_REACQUIRE)
             {
                 Log("FFB watchdog detected sustained device loss; re-acquiring.");
-                ReacquireFFBDevice();
+                if (ReacquireFFBDevice())
+                    RestoreActiveSpring();
                 failures = 0;
             }
             Sleep(WATCHDOG_INTERVAL_MS);

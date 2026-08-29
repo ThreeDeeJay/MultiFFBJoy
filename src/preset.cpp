@@ -19,7 +19,6 @@ namespace
 {
 std::atomic<bool> g_presetTestRunning{false};
 std::thread g_presetTestThread;
-void PresetMonitorThread();
 
 std::string Trim(const std::string& value)
 {
@@ -420,8 +419,14 @@ void ApplyVehicleStateImpl(const VehicleState& state)
 
     if (!found)
     {
-        Logf("Vehicle state has no matching forcefield: gear=\"%s\" gearIndex=%d.",
+        Logf("Vehicle state has no matching forcefield: gear=\"%s\" gearIndex=%d; using basic centering.",
              state.gear.c_str(), state.gearIndex);
+        {
+            std::lock_guard<std::mutex> lock(g_presetMutex);
+            g_vehicleState = state;
+            g_vehicleStateValid = true;
+        }
+        SetSpringStrength(1.0f);
         return;
     }
 
@@ -459,31 +464,7 @@ void ApplyVehicleStateImpl(const VehicleState& state)
         StopSpring();
     }
 
-    // Start physical zone monitoring only after the initial state has been
-    // applied and the optional one-second startup transition has completed.
-    if (!g_presetTestRunning.load(std::memory_order_acquire))
-    {
-        {
-            std::lock_guard<std::mutex> monitorLock(g_presetMutex);
-            g_presetTestState.enabled = true;
-            g_presetTestState.activeForceField = index;
-            g_presetTestState.normalizedX = 0.0f;
-            g_presetTestState.normalizedY = 0.0f;
-        }
-        g_presetTestRunning.store(true, std::memory_order_release);
-        try
-        {
-            g_presetTestThread = std::thread(PresetMonitorThread);
-        }
-        catch (const std::exception& error)
-        {
-            g_presetTestRunning.store(false, std::memory_order_release);
-            Logf("Failed to start preset monitor: %s", error.what());
-        }
-    }
-
-    // Do not command a gear merely because telemetry arrived. Gear changes are
-    // initiated by entering a physical FFB zone in UpdatePresetTest().
+    TriggerZoneGearSelection(selected, state);
 }
 
 void ClearVehicleStateImpl()
