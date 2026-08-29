@@ -35,7 +35,7 @@ void StopEffect(IDirectInputEffect* effect, const char* label)
 
 void SetSpringState(float strength, bool persistent)
 {
-    std::lock_guard<std::mutex> stateLock(g_stateMutex);
+    std::lock_guard<std::mutex> lock(g_stateMutex);
     g_state.springStrength = strength;
     g_state.springPersistent = persistent;
 }
@@ -439,7 +439,7 @@ bool EnsureFFBDeviceReady()
         Sleep(HEALTH_RETRY_MS);
         if (g_ffbDevice && IsFFBDeviceUsable())
         {
-            std::lock_guard<std::mutex> stateLock(g_stateMutex);
+            std::lock_guard<std::mutex> lock(g_stateMutex);
             g_state.acquired = true;
             return true;
         }
