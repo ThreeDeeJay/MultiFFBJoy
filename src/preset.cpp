@@ -381,6 +381,8 @@ void ApplyVehicleStateImpl(const VehicleState& state)
         return;
     }
 
+    Logf("Vehicle gear state -> zone \"%s\" (index=%d, gear=%s, gearIndex=%d).",
+         selected.name.c_str(), index, state.gear.c_str(), state.gearIndex);
     if (selected.forceType != 1)
     {
         StopSpring();
@@ -526,6 +528,9 @@ void UpdatePresetTest()
     }
     if (!enabled || !IsForceFieldPresetLoaded() || !EnsureFFBDeviceReady())
         return;
+    if (g_vehicleStateValid.load(std::memory_order_acquire))
+        return;
+
     LONG x = 0, y = 0;
     if (!ReadFFBJoystickPosition(x, y))
         return;

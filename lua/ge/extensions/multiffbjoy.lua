@@ -42,6 +42,18 @@ local function safeToString(value)
   return tostring(value)
 end
 
+local function firstNonEmpty(...)
+  for i = 1, select("#", ...) do
+    local value = select(i, ...)
+    if value ~= nil then
+      local text = tostring(value)
+      if text ~= "" then return value end
+    end
+  end
+  return nil
+end
+
+
 local function sendCommand(command, quiet)
   if udp == nil then
     if not quiet then log("Cannot send command; UDP is not initialized.") end
@@ -109,13 +121,10 @@ local function pollUdp()
       timeSinceHelperAck = 0
       if not helperConnected then
         helperConnected = true
-        -- Force a complete resend after helper restart/reconnect so a newly
-        -- started helper loads the current vehicle profile immediately.
-        lastVehicleCommandSignature = nil
-        lastStateCommandSignature = nil
         log("========================================")
         log("FFB helper connection is ALIVE.")
         log("========================================")
+        -- Re-send the active profile/state after a helper restart.
         if currentMetadata ~= nil then
           sendVehicleRequest(currentMetadata, "helper reconnect")
         end
@@ -345,29 +354,30 @@ function M.receiveVehicleMetadata(metadata)
     log("VLUA did not return configuration codename; using GE fallback: " .. metadata.configuration)
   end
   if safeToString(metadata.partConfig) == "" then metadata.partConfig = currentPartConfig end
-  -- VLUA does not always expose the vehicle's info.json Type. Resolve it
-  -- through the GE vehicle registry, where the model metadata is available.
-  if metadata.vehicleType == "" and metadata.vehicle ~= "" and core_vehicles ~= nil and core_vehicles.getModel then
-    local ok, modelData = pcall(function() return core_vehicles.getModel(metadata.vehicle) end)
-    if ok and type(modelData) == "table" and type(modelData.model) == "table" then
-      metadata.vehicleType = safeToString(firstNonEmpty(
-        modelData.model.Type, modelData.model.type, modelData.model.vehicleType,
-        modelData.model.VehicleType, modelData.model.category
-      ))
-    end
-  end
-  -- VLUA does not always expose info.json Type. Resolve the model metadata
-  -- in GE, where core_vehicles.getModel() exposes the canonical Type.
-  if safeToString(metadata.vehicleType) == "" and metadata.vehicle ~= "" and core_vehicles ~= nil and core_vehicles.getModel then
-    local ok, modelData = pcall(function() return core_vehicles.getModel(metadata.vehicle) end)
-    if ok and type(modelData) == "table" and type(modelData.model) == "table" then
-      local model = modelData.model
-      local modelType = model.Type or model.type or model.vehicleType or model.VehicleType or model.category
-      if modelType ~= nil and tostring(modelType) ~= "" then
-        metadata.vehicleType = tostring(modelType)
+
+  -- Vehicle Lua may not expose the model Type directly.  The GE vehicle
+  -- manager does, however, expose model metadata for the active vehicle.
+  -- Use it as the authoritative type fallback (Car, Aircraft, Truck, etc.).
+  if safeToString(metadata.vehicleType) == "" then
+    local modelType = nil
+    local okModel, modelData = pcall(function()
+      if core_vehicles and core_vehicles.getModel then
+        return core_vehicles.getModel(vehicleId)
       end
+      return nil
+    end)
+    if okModel and type(modelData) == "table" then
+      if type(modelData.model) == "table" then
+        modelType = firstNonEmpty(modelData.model.Type, modelData.model.type, modelData.model.vehicleType)
+      end
+      modelType = firstNonEmpty(modelType, modelData.Type, modelData.type, modelData.vehicleType)
+    end
+    if modelType ~= nil then
+      metadata.vehicleType = modelType
+      log("Vehicle type from GE model metadata: " .. tostring(modelType))
     end
   end
+
   metadata.vehicleType = normalizeVehicleType(metadata.vehicleType)
   metadata.transmission = normalizeTransmission(metadata.transmission, metadata.transmissionRaw)
   metadata.gearLayout = normalizeGearLayout(metadata.gearLayout)
@@ -451,10 +461,6 @@ end
 local function onExtensionLoaded()
   if initialized then return end
   initialized = true
-  helperConnected = false
-  timeSinceHelperAck = HELPER_TIMEOUT + 1
-  lastVehicleCommandSignature = nil
-  lastStateCommandSignature = nil
   log("Extension initialized.")
   initializeUDP()
 
