@@ -95,6 +95,7 @@ struct ActiveSpringState
 {
     bool active = false;
     bool forceField = false;
+    bool constantForce = false;
     float strength = 0.0f;
     ForceField field;
 };
@@ -180,10 +181,12 @@ struct VehicleState
     std::string gearboxMode;
     double gearPosition = 0.0;
     std::string automaticModes;
+    std::string defaultAutomaticMode;
 };
 
 extern VehicleState g_vehicleState;
 extern std::atomic<bool> g_vehicleStateValid;
+extern std::atomic<bool> g_vehicleTransitioning;
 
 extern DeviceState g_state;
 extern ActiveSpringState g_activeSpring;
@@ -223,6 +226,7 @@ void StopUdpServer();
 void SendUdpCommand(const std::string& command);
 void ApplyVehicleState(const VehicleState& state);
 void ClearVehicleState();
+void RequestVehicleGear(const std::string& zoneName, int gearIndex);
 
 // DirectInput / FFB.
 bool InitializeDirectInput(HINSTANCE instance);
@@ -237,7 +241,9 @@ void StopSpring();
 void StopTestConstantForce();
 bool SetSpringStrength(float strength);
 bool SetSpringForceField(const ForceField& forceField);
+bool SetConstantForceField(const ForceField& forceField);
 bool SetTestConstantForce(LONG x, LONG y);
+bool MoveStickToForceFieldCenterOverTime(const ForceField& forceField, DWORD durationMs = 1000);
 bool EnsureFFBDeviceReady();
 bool ReacquireFFBDevice();
 void StartFFBWatchdog();
@@ -251,12 +257,11 @@ void ClearForceFieldPreset();
 void UpdatePresetTest();
 void StartPresetTest();
 void StopPresetTest();
-bool SetSpringForceField(const ForceField& forceField);
+std::filesystem::path GetLoadedForceFieldPresetPath();
 bool LoadHardCodedPRNDReference();
 bool ApplyHardCodedPRNDZone(int zoneIndex);
 void StartHardCodedPRNDTest();
 void StopHardCodedPRNDTest();
 int FindForceFieldAtPosition(LONG x, LONG y);
 bool IsForceFieldPresetLoaded();
-std::filesystem::path GetLoadedForceFieldPresetPath();
 } // namespace MultiFFBJoy

@@ -12,6 +12,8 @@ std::vector<PresetInfo> g_availablePresets;
 PresetTestState g_presetTestState;
 VehicleState g_vehicleState;
 std::atomic<bool> g_vehicleStateValid{false};
+std::atomic<bool> g_vehicleTransitioning{false};
+std::atomic<bool> g_vehicleStartupMovePending{true};
 
 namespace
 {
@@ -291,80 +293,111 @@ bool GearMatchesField(const ForceField& field, const VehicleState& state)
 {
     const std::string gear = NormalizeGearToken(state.gear);
     const std::string name = NormalizeGearToken(field.name);
+    std::string mode = NormalizeGearToken(state.gearboxMode);
+    if (mode.empty())
+        mode = NormalizeGearToken(state.defaultAutomaticMode);
 
     if (name.empty())
         return false;
 
-    // BeamNG can briefly report the shifter mode before getGearName() is
-    // populated. Do this check before rejecting an empty gear string.
-    const std::string mode = NormalizeGearToken(state.gearboxMode);
     if (gear.empty())
     {
         if (mode == "PARK" && name == "PARK") return true;
         if (mode == "REVERSE" && name == "REVERSE") return true;
         if (mode == "NEUTRAL" && name == "NEUTRAL") return true;
         if (mode == "DRIVE" && name == "DRIVE") return true;
-        if (mode == "LOW" && (name == "LOW" || ExtractFirstInteger(name) == 1)) return true;
+        if (mode == "LOW" && (name == "LOW" || name == "L")) return true;
     }
 
-    // Standard PRND labels.
     if (gear == "P" && name == "PARK") return true;
     if (gear == "R" && name == "REVERSE") return true;
     if (gear == "N" && name == "NEUTRAL") return true;
     if (gear == "D" && name == "DRIVE") return true;
+    if ((gear == "L" || gear == "LOW") && (name == "LOW" || name == "L")) return true;
 
-    // Numeric gear matching is intentionally based on the digits in the
-    // human-readable forcefield name:
-    //
-    //   "1st"  -> 1
-    //   "2nd"  -> 2
-    //   "12th" -> 12
-    //
-    // This keeps preset naming flexible without requiring a hard-coded list
-    // of ordinal suffixes.
     const int gearNumber = ExtractFirstInteger(gear);
     const int fieldNumber = ExtractFirstInteger(name);
     if (gearNumber >= 0 && fieldNumber >= 0 && gearNumber == fieldNumber)
         return true;
 
-    // Common non-numeric first/second/low aliases.
-    if ((gear == "L" || gear == "LOW") &&
-        (name == "LOW" || name == "L" || name == "FIRST" || name == "FIRSTGEAR"))
+    if (state.gearIndex != 0 &&
+        (field.primarySequentialGearValue == state.gearIndex ||
+         field.secondarySequentialGearValue == state.gearIndex))
         return true;
 
-    if ((gear == "SECOND" || gear == "2ND") &&
-        (name == "SECOND" || name == "SECONDGEAR" || name == "2ND"))
-        return true;
+    return !gear.empty() && gear == name;
+}
 
-    // Generic sequential gear values supplied by the forcefield file.
-    if (state.gearIndex != 0)
+int GetRequestedGearIndex(const ForceField& field, const VehicleState& state)
+{
+    const std::string name = NormalizeGearToken(field.name);
+    const std::string gear = NormalizeGearToken(state.gear);
+
+    // Automatic gearbox: automaticModes is the actual gear-lever layout.
+    // Its character index is the index accepted by shiftToGearIndex().
+    if (!state.automaticModes.empty())
     {
-        if (field.primarySequentialGearValue == state.gearIndex ||
-            field.secondarySequentialGearValue == state.gearIndex)
-            return true;
+        const std::string modes = NormalizeGearToken(state.automaticModes);
+        const int numericField = ExtractFirstInteger(field.name);
+        for (size_t i = 0; i < modes.size(); ++i)
+        {
+            const char mode = modes[i];
+            std::string token(1, mode);
+            if ((token == "P" && name == "PARK") ||
+                (token == "R" && name == "REVERSE") ||
+                (token == "N" && name == "NEUTRAL") ||
+                (token == "D" && name == "DRIVE") ||
+                (token == "L" && (name == "LOW" || name == "L")) ||
+                (numericField >= 0 && mode >= '0' && mode <= '9' &&
+                 numericField == static_cast<int>(mode - '0')))
+                return static_cast<int>(i);
+        }
     }
 
-    // Last-resort exact normalized-name match.
-    return !gear.empty() && gear == name;
+    // Manual/sequential presets: use the number embedded in the zone name.
+    const int numeric = ExtractFirstInteger(field.name);
+    if (numeric >= 0)
+        return numeric;
+
+    if (name == "PARK") return 0;
+    if (name == "REVERSE")
+        return NormalizeGearToken(state.transmission) == "AUTOMATIC" ? 1 : -1;
+    if (name == "NEUTRAL") return NormalizeGearToken(state.transmission) == "AUTOMATIC" ? 2 : 0;
+    if (name == "DRIVE") return NormalizeGearToken(state.transmission) == "AUTOMATIC" ? 3 : 1;
+    if (name == "LOW" || name == "L") return NormalizeGearToken(state.transmission) == "AUTOMATIC" ? 4 : 1;
+
+    // If the preset zone corresponds to the current state, retain it.
+    if (state.gearIndex != 0 && GearMatchesField(field, state))
+        return state.gearIndex;
+
+    (void)gear;
+    return -99999;
+}
+
+void TriggerZoneGearSelection(const ForceField& field, const VehicleState& state)
+{
+    const int index = GetRequestedGearIndex(field, state);
+    if (index == -99999)
+        return;
+
+    RequestVehicleGear(field.name, index);
 }
 
 void ApplyVehicleStateImpl(const VehicleState& state)
 {
-    if (!IsForceFieldPresetLoaded())
-        return;
-    if (!EnsureFFBDeviceReady())
-        return;
-
     ForceField selected;
     bool found = false;
+    bool singleZone = false;
     int index = -1;
+
     {
         std::lock_guard<std::mutex> lock(g_presetMutex);
+        if (g_loadedPreset.forceFields.empty())
+            return;
 
         if (g_loadedPreset.forceFields.size() == 1)
         {
-        // A single-zone preset has no gear selector.
-        // Always use its only forcefield.
+            singleZone = true;
             selected = g_loadedPreset.forceFields.front();
             index = 0;
             found = true;
@@ -391,35 +424,47 @@ void ApplyVehicleStateImpl(const VehicleState& state)
         return;
     }
 
-    if (g_loadedPreset.forceFields.size() == 1)
     {
-        Logf("Using single-zone forcefield \"%s\".",
-           selected.name.c_str());
+        std::lock_guard<std::mutex> lock(g_presetMutex);
+        g_vehicleState = state;
+        g_vehicleStateValid = true;
+    }
+
+    if (singleZone)
+        Logf("Using single-zone forcefield \"%s\".", selected.name.c_str());
+    else
+        Logf("Vehicle gear state -> zone \"%s\" (index=%d, gear=%s, gearIndex=%d).",
+             selected.name.c_str(), index, state.gear.c_str(), state.gearIndex);
+
+    // The first valid vehicle state after a profile load is the startup
+    // position. Move there gradually before the physical zone monitor is
+    // allowed to generate further gear changes.
+    const bool startupMove = g_vehicleStartupMovePending.exchange(
+        false, std::memory_order_acq_rel);
+
+    if (startupMove)
+        MoveStickToForceFieldCenterOverTime(selected, 1000);
+
+    if (selected.forceType == 1)
+    {
+        SetSpringForceField(selected);
+    }
+    else if (selected.forceType == 2)
+    {
+        SetConstantForceField(selected);
     }
     else
     {
-        Logf("Vehicle gear state -> zone \"%s\" (index=%d, gear=%s, gearIndex=%d).",
-           selected.name.c_str(),
-           index,
-           state.gear.c_str(),
-           state.gearIndex);
+        StopSpring();
     }
 
-    if (selected.forceType != 1)
-    {
-        StopSpring();
-        return;
-    }
-    if (!SetSpringForceField(selected))
-    {
-        Logf("Failed to apply vehicle-state forcefield \"%s\".",
-           selected.name.c_str());
-    }
+    TriggerZoneGearSelection(selected, state);
 }
 
 void ClearVehicleStateImpl()
 {
     g_vehicleStateValid = false;
+    g_vehicleStartupMovePending = true;
     std::lock_guard<std::mutex> lock(g_presetMutex);
     g_vehicleState = VehicleState{};
 }
@@ -553,8 +598,8 @@ void UpdatePresetTest()
     }
     if (!enabled || !IsForceFieldPresetLoaded() || !EnsureFFBDeviceReady())
         return;
-    //if (g_vehicleStateValid.load(std::memory_order_acquire))
-    //    return;
+    if (g_vehicleTransitioning.load(std::memory_order_acquire))
+        return;
 
     LONG x = 0, y = 0;
     if (!ReadFFBJoystickPosition(x, y))
@@ -564,6 +609,9 @@ void UpdatePresetTest()
     ForceField selected;
     bool haveField = false;
     bool changed = false;
+    VehicleState state;
+    bool haveState = false;
+
     {
         std::lock_guard<std::mutex> lock(g_presetMutex);
         if (index >= 0 && static_cast<size_t>(index) < g_loadedPreset.forceFields.size())
@@ -578,7 +626,10 @@ void UpdatePresetTest()
             g_presetTestState.normalizedY = static_cast<float>(y);
             changed = true;
         }
+        state = g_vehicleState;
+        haveState = g_vehicleStateValid.load(std::memory_order_acquire);
     }
+
     if (!changed)
         return;
 
@@ -588,15 +639,16 @@ void UpdatePresetTest()
         StopSpring();
         return;
     }
-    Logf("Preset zone: \"%s\" (index=%d, X=%ld Y=%ld).",
-         selected.name.c_str(), index, x, y);
-    if (selected.forceType != 1)
-    {
+
+    if (selected.forceType == 1)
+        SetSpringForceField(selected);
+    else if (selected.forceType == 2)
+        SetConstantForceField(selected);
+    else
         StopSpring();
-        return;
-    }
-    if (!SetSpringForceField(selected))
-        Logf("Failed to apply spring forcefield \"%s\".", selected.name.c_str());
+
+    if (haveState)
+        TriggerZoneGearSelection(selected, state);
 }
 
 void StartPresetTest()

@@ -78,7 +78,10 @@ void ProcessCommand(const std::string& command)
         }
 
         if (announceAlive)
+        {
             Log("BeamNG Lua connection is ALIVE.");
+            SendUdpReply("SYNC_REQUEST|MultiFFBJoy");
+        }
 
         SendUdpReply("HELLO_ACK|MultiFFBJoy");
         return;
@@ -107,9 +110,12 @@ void ProcessCommand(const std::string& command)
         state.gearboxMode = fields[7];
         try { state.gearPosition = std::stod(fields[8]); } catch (...) { state.gearPosition = 0.0; }
         state.automaticModes = fields[9];
-        Logf("RX: STATE vehicle=%s config=%s transmission=%s gear=%s gearIndex=%d position=%.3f mode=%s",
+        if (fields.size() >= 11)
+            state.defaultAutomaticMode = fields[10];
+        Logf("RX: STATE vehicle=%s config=%s transmission=%s gear=%s gearIndex=%d position=%.3f mode=%s automaticModes=%s",
              state.vehicle.c_str(), state.configuration.c_str(), state.transmission.c_str(),
-             state.gear.c_str(), state.gearIndex, state.gearPosition, state.gearboxMode.c_str());
+             state.gear.c_str(), state.gearIndex, state.gearPosition, state.gearboxMode.c_str(),
+             state.automaticModes.c_str());
         ApplyVehicleState(state);
         SendUdpReply("ACK|STATE");
         return;
@@ -267,7 +273,10 @@ void NetworkThread()
             }
         }
         if (connectionLost)
+        {
             Log("BeamNG Lua connection is LOST.");
+            ClearForceFieldPreset();
+        }
 
         bool timedOut = false;
         bool persistent = false;
@@ -381,6 +390,12 @@ void StopUdpServer()
         WSACleanup();
         g_wsaStarted = false;
     }
+}
+
+void RequestVehicleGear(const std::string& zoneName, int gearIndex)
+{
+    std::string command = "SHIFT|" + zoneName + "|" + std::to_string(gearIndex);
+    SendUdpReply(command);
 }
 
 void SendUdpCommand(const std::string& command)

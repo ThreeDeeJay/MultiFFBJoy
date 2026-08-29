@@ -158,16 +158,40 @@ local function getGearState(gearbox)
     safeValue(gearbox, "currentGearPosition")
   )
 
+  -- During the first frame after spawn, getGearName() can be empty even
+  -- though the automatic shift logic already knows its startup mode.
+  if (gear == nil or tostring(gear) == "") and gearboxMode ~= nil and tostring(gearboxMode) ~= "" then
+    local mode = tostring(gearboxMode)
+    if mode == "park" then gear = "P"
+    elseif mode == "reverse" then gear = "R"
+    elseif mode == "neutral" then gear = "N"
+    elseif mode == "drive" then gear = "D"
+    elseif mode == "low" then gear = "L" end
+  end
+
   return stringify(gear), stringify(gearIndex), stringify(gearboxMode), stringify(gearPosition)
 end
 
 local function getAutomaticModes(gearbox)
   local values = electrics and electrics.values or nil
+  local mainController = controller and safeValue(controller, "mainController") or nil
+  local controllerConfig = firstNonEmpty(
+    safeValue(jbeamData, "vehicleController"),
+    safeValue(v and v.data, "vehicleController")
+  )
+
   local candidates = {
-    safeValue(gearbox, "availableModes"), safeValue(gearbox, "automaticModes"),
-    safeValue(gearbox, "shiftModes"), safeValue(gearbox, "modes"),
-    safeValue(gearbox, "gearboxModes"), safeValue(values, "automaticModes")
+    safeValue(controllerConfig, "automaticModes"),
+    safeValue(jbeamData, "automaticModes"),
+    safeValue(v and v.data, "automaticModes"),
+    safeValue(mainController, "automaticModes"),
+    safeValue(mainController, "availableModes"),
+    safeValue(mainController, "shiftModes"),
+    safeValue(gearbox, "automaticModes"),
+    safeValue(gearbox, "availableModes"),
+    safeValue(values, "automaticModes"),
   }
+
   for _, value in ipairs(candidates) do
     if type(value) == "string" and value ~= "" then return value end
     if type(value) == "table" then
@@ -176,6 +200,17 @@ local function getAutomaticModes(gearbox)
     end
   end
   return ""
+end
+
+local function getDefaultAutomaticMode()
+  local controllerConfig = firstNonEmpty(
+    safeValue(jbeamData, "vehicleController"),
+    safeValue(v and v.data, "vehicleController")
+  )
+  return stringify(firstNonEmpty(
+    safeValue(controllerConfig, "defaultAutomaticMode"),
+    safeValue(controllerConfig, "defaultAutomaticForwardMode")
+  ))
 end
 
 local function getGearLayout(gearbox, automaticModes)
@@ -222,6 +257,7 @@ local function buildMetadata()
   local transmission, transmissionRaw, gearbox = getTransmission()
   local gear, gearIndex, gearboxMode, gearPosition = getGearState(gearbox)
   local automaticModes = getAutomaticModes(gearbox)
+  local defaultAutomaticMode = getDefaultAutomaticMode()
   local values = electrics and electrics.values or nil
   local gearboxGearName = stringify(safeCall(gearbox, "getGearName"))
   local gearboxGearPosition = stringify(safeCall(gearbox, "getGearPosition"))
@@ -248,6 +284,7 @@ local function buildMetadata()
     gearIndex = gearIndex,
     gearPosition = gearPosition,
     automaticModes = automaticModes,
+    defaultAutomaticMode = defaultAutomaticMode,
     gearLayout = getGearLayout(gearbox, automaticModes),
     gearboxFields = shallowStringifyTable(gearbox, 48),
     gearDiagnostics = "electrics.gear=" .. electricsGear
@@ -258,7 +295,9 @@ local function buildMetadata()
       .. "; gearbox.currentGearIndex=" .. gearboxCurrentGearIndex
       .. "; controller.getGearName=" .. controllerGearName
       .. "; controller.getGearPosition=" .. controllerGearPosition
-      .. "; controller.currentGearIndex=" .. controllerGearIndex,
+      .. "; controller.currentGearIndex=" .. controllerGearIndex
+      .. "; automaticModes=" .. automaticModes
+      .. "; defaultAutomaticMode=" .. defaultAutomaticMode,
   }
 end
 
@@ -288,7 +327,8 @@ local function sendStateIfChanged()
   local metadata = buildMetadata()
   local signature = table.concat({
     tostring(metadata.vehicleId), metadata.gear, metadata.gearIndex,
-    metadata.gearboxMode, metadata.gearPosition, metadata.transmissionRaw
+    metadata.gearboxMode, metadata.gearPosition, metadata.transmissionRaw,
+    metadata.automaticModes, metadata.defaultAutomaticMode
   }, "|")
   if signature == lastStateSignature then return end
   lastStateSignature = signature
@@ -304,6 +344,7 @@ local function sendStateIfChanged()
     gearboxMode = metadata.gearboxMode,
     gearPosition = metadata.gearPosition,
     automaticModes = metadata.automaticModes,
+    defaultAutomaticMode = metadata.defaultAutomaticMode,
   }
   state._geFunction = "receiveVehicleState"
   queueToGE(state)

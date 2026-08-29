@@ -96,6 +96,21 @@ bool ApplySpringParameters(LONG centerX, LONG centerY,
     return true;
 }
 
+void ResolveSpringFieldParameters(const ForceField& forceField,
+                                    LONG& centerX, LONG& centerY,
+                                    LONG& coefficientX, LONG& coefficientY)
+{
+    centerX = ClampFFB(forceField.centerX);
+    centerY = ClampFFB(forceField.centerY);
+
+    coefficientX = std::clamp<LONG>(std::abs(forceField.powerX), 0, DI_FFNOMINALMAX);
+    coefficientY = std::clamp<LONG>(std::abs(forceField.powerY), 0, DI_FFNOMINALMAX);
+
+    // Older .fff files may omit explicit spring power. Keep them functional.
+    if (coefficientX == 0) coefficientX = DI_FFNOMINALMAX;
+    if (coefficientY == 0) coefficientY = DI_FFNOMINALMAX;
+}
+
 bool RestoreActiveSpring()
 {
     ActiveSpringState active;
@@ -105,6 +120,8 @@ bool RestoreActiveSpring()
     }
     if (!active.active)
         return true;
+    if (active.constantForce)
+        return SetConstantForceField(active.field);
     if (active.forceField)
         return SetSpringForceField(active.field);
     return SetSpringStrength(active.strength);
@@ -219,6 +236,7 @@ void StopSpring()
 {
     std::lock_guard<std::recursive_mutex> lock(g_ffbMutex);
     StopEffect(g_springEffect, "Spring");
+    StopEffect(g_testConstantEffect, "ConstantForce");
     SetSpringState(0.0f, false);
     g_activeSpring = ActiveSpringState{};
     UpdateStatus();
@@ -245,6 +263,7 @@ bool SetSpringStrength(float strength)
 
     g_activeSpring.active = strength > 0.0f;
     g_activeSpring.forceField = false;
+    g_activeSpring.constantForce = false;
     g_activeSpring.strength = strength;
     g_activeSpring.field = ForceField{};
     SetSpringState(strength, strength > 0.0f);
@@ -260,40 +279,157 @@ bool SetSpringForceField(const ForceField& forceField)
     if (!g_ffbDevice || !g_springEffect)
         return false;
 
-    LONG centerX = ClampFFB(forceField.centerX);
-    LONG centerY = ClampFFB(forceField.centerY);
-
-    // Straight PRND's Park and Drive are edge detents, not interior centers.
-    // Keep X centered and put Y at the corresponding travel limit.
-    if (_stricmp(forceField.name.c_str(), "Park") == 0)
-    {
-        centerX = 0;
-        centerY = FFB_COORD_MIN;
-    }
-    else if (_stricmp(forceField.name.c_str(), "Drive") == 0)
-    {
-        centerX = 0;
-        centerY = FFB_COORD_MAX;
-    }
-
-    const LONG coefficientX = std::clamp<LONG>(
-        std::abs(forceField.powerX), 0, DI_FFNOMINALMAX);
-    const LONG coefficientY = std::clamp<LONG>(
-        std::abs(forceField.powerY), 0, DI_FFNOMINALMAX);
-
-    Logf("SetSpringForceField: \"%s\" equilibrium=(%ld,%ld) coeff=(%ld,%ld)",
-         forceField.name.c_str(), centerX, centerY, coefficientX, coefficientY);
+    LONG centerX = 0, centerY = 0, coefficientX = 0, coefficientY = 0;
+    ResolveSpringFieldParameters(forceField, centerX, centerY,
+                                 coefficientX, coefficientY);
 
     if (!ApplySpringParameters(centerX, centerY, coefficientX, coefficientY, true))
         return false;
 
     g_activeSpring.active = true;
     g_activeSpring.forceField = true;
+    g_activeSpring.constantForce = false;
     g_activeSpring.strength = 1.0f;
     g_activeSpring.field = forceField;
     SetSpringState(1.0f, true);
     StopTestConstantForce();
     UpdateStatus();
+    Logf("Spring zone applied: \"%s\" equilibrium=(%ld,%ld) coeff=(%ld,%ld)",
+         forceField.name.c_str(), centerX, centerY, coefficientX, coefficientY);
+    return true;
+}
+
+bool SetConstantForceField(const ForceField& forceField)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_ffbMutex);
+    if (!g_ffbDevice || !g_testConstantEffect)
+        return false;
+
+    LONG x = forceField.powerX;
+    LONG y = forceField.powerY;
+    if (x == 0 && y == 0)
+    {
+        x = forceField.offsetX;
+        y = forceField.offsetY;
+    }
+    if (x == 0 && y == 0)
+    {
+        x = forceField.centerX;
+        y = forceField.centerY;
+    }
+
+    x = ClampFFB(x);
+    y = ClampFFB(y);
+    if (x == 0 && y == 0)
+    {
+        StopTestConstantForce();
+        return false;
+    }
+
+    DWORD axes[2] = {DIJOFS_X, DIJOFS_Y};
+    LONG direction[2] = {x, y};
+    const LONG magnitude = static_cast<LONG>(std::min<long long>(
+        DI_FFNOMINALMAX,
+        static_cast<long long>(std::sqrt(
+            static_cast<double>(x) * x + static_cast<double>(y) * y))));
+
+    DICONSTANTFORCE force{};
+    force.lMagnitude = magnitude;
+    DIEFFECT effect{};
+    effect.dwSize = sizeof(effect);
+    effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+    effect.dwDuration = INFINITE;
+    effect.dwGain = DI_FFNOMINALMAX;
+    effect.dwTriggerButton = DIEB_NOTRIGGER;
+    effect.cAxes = 2;
+    effect.rgdwAxes = axes;
+    effect.rglDirection = direction;
+    effect.cbTypeSpecificParams = sizeof(force);
+    effect.lpvTypeSpecificParams = &force;
+
+    StopEffect(g_springEffect, "Spring");
+    HRESULT hr = g_testConstantEffect->SetParameters(
+        &effect, DIEP_DIRECTION | DIEP_TYPESPECIFICPARAMS);
+    if (FAILED(hr))
+    {
+        Logf("SetParameters(ConstantForce) failed: 0x%08lX",
+             static_cast<unsigned long>(hr));
+        return false;
+    }
+    hr = g_testConstantEffect->Start(1, 0);
+    if (FAILED(hr))
+    {
+        Logf("ConstantForce Start failed: 0x%08lX", static_cast<unsigned long>(hr));
+        return false;
+    }
+
+    g_activeSpring.active = true;
+    g_activeSpring.forceField = false;
+    g_activeSpring.constantForce = true;
+    g_activeSpring.strength = 0.0f;
+    g_activeSpring.field = forceField;
+    SetSpringState(0.0f, true);
+    UpdateStatus();
+    Logf("Constant-force zone applied: \"%s\" force=(%ld,%ld) magnitude=%ld",
+         forceField.name.c_str(), x, y, magnitude);
+    return true;
+}
+
+bool MoveStickToForceFieldCenterOverTime(const ForceField& forceField, DWORD durationMs)
+{
+    if (durationMs == 0)
+        return SetSpringForceField(forceField);
+
+    g_vehicleTransitioning.store(true, std::memory_order_release);
+
+    struct TransitionGuard
+    {
+        ~TransitionGuard() { g_vehicleTransitioning.store(false, std::memory_order_release); }
+    } guard;
+
+    if (!EnsureFFBDeviceReady())
+        return false;
+
+    LONG startX = 0, startY = 0;
+    if (!ReadFFBJoystickPosition(startX, startY))
+    {
+        startX = 0;
+        startY = 0;
+    }
+
+    LONG targetX = 0, targetY = 0, coefficientX = 0, coefficientY = 0;
+    ResolveSpringFieldParameters(forceField, targetX, targetY,
+                                 coefficientX, coefficientY);
+
+    StopTestConstantForce();
+    const DWORD stepMs = 10;
+    const DWORD steps = std::max<DWORD>(1, durationMs / stepMs);
+
+    for (DWORD step = 1; step <= steps && g_running; ++step)
+    {
+        const double t = static_cast<double>(step) / static_cast<double>(steps);
+        const double smooth = t * t * (3.0 - 2.0 * t);
+        const LONG x = static_cast<LONG>(std::lround(
+            startX + (targetX - startX) * smooth));
+        const LONG y = static_cast<LONG>(std::lround(
+            startY + (targetY - startY) * smooth));
+
+        std::lock_guard<std::recursive_mutex> lock(g_ffbMutex);
+        if (!g_ffbDevice || !g_springEffect)
+            return false;
+        if (!ApplySpringParameters(x, y, coefficientX, coefficientY, true))
+            return false;
+        g_activeSpring.active = true;
+        g_activeSpring.forceField = true;
+        g_activeSpring.constantForce = false;
+        g_activeSpring.strength = 1.0f;
+        g_activeSpring.field = forceField;
+        SetSpringState(1.0f, true);
+        Sleep(stepMs);
+    }
+
+    Logf("Startup stick transition complete: \"%s\" center=(%ld,%ld) duration=%lums",
+         forceField.name.c_str(), targetX, targetY, static_cast<unsigned long>(durationMs));
     return true;
 }
 

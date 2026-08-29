@@ -126,12 +126,34 @@ local function pollUdp()
         log("========================================")
         log("FFB helper connection is ALIVE.")
         log("========================================")
-        -- Re-send the active profile/state after a helper restart.
-        if currentMetadata ~= nil then
-          sendVehicleRequest(currentMetadata, "helper reconnect")
-        end
-        if currentState ~= nil then
-          sendVehicleState(currentState, "helper reconnect")
+      end
+    elseif data == "SYNC_REQUEST|MultiFFBJoy" then
+      timeSinceHelperAck = 0
+      log("FFB helper requested vehicle/profile synchronization.")
+      lastVehicleCommandSignature = nil
+      lastStateCommandSignature = nil
+      if currentMetadata ~= nil then
+        sendVehicleRequest(currentMetadata, "helper sync")
+      end
+      if currentState ~= nil then
+        sendVehicleState(currentState, "helper sync")
+      end
+    elseif data:sub(1, 6) == "SHIFT|" then
+      timeSinceHelperAck = 0
+      local zoneName, gearIndex = data:match("^SHIFT|([^|]*)|(-?%d+)$")
+      local index = tonumber(gearIndex)
+      if index ~= nil then
+        local vehicle = getPlayerVehicle()
+        if vehicle ~= nil then
+          local command = string.format(
+            "local c=controller.getController('main'); if c and c.shiftToGearIndex then c.shiftToGearIndex(%d) end",
+            math.floor(index))
+          local ok, err = pcall(function() vehicle:queueLuaCommand(command) end)
+          if ok then
+            log("FFB zone gear command: " .. tostring(zoneName) .. " -> index " .. tostring(index))
+          else
+            log("FFB zone gear command failed: " .. tostring(err))
+          end
         end
       end
     elseif data == "ACK|VEHICLE" then
@@ -253,7 +275,8 @@ sendVehicleState = function(state, reason)
   local command = table.concat({
     "STATE", safeToString(state.vehicleId), safeToString(state.vehicle),
     safeToString(state.configuration), transmission, gear, gearIndex,
-    gearboxMode, gearPosition, safeToString(state.automaticModes)
+    gearboxMode, gearPosition, safeToString(state.automaticModes),
+    safeToString(state.defaultAutomaticMode)
   }, "|")
   local signature = command
   if signature == lastStateCommandSignature then return true end
