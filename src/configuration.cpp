@@ -376,15 +376,25 @@ bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request)
     ResolvedProfile profile;
     if (!ResolveVehicleProfile(request, profile))
     {
-        Logf("No configured FFB profile for game=\"%s\" type=\"%s\" vehicle=\"%s\" configuration=\"%s\" transmission=\"%s\".",
+        Logf("No configured FFB profile for game=\"%s\" type=\"%s\" vehicle=\"%s\" configuration=\"%s\" transmission=\"%s\". Falling back to basic centering.",
              request.game.c_str(), request.vehicleType.c_str(), request.vehicle.c_str(),
              request.configuration.c_str(), request.transmission.c_str());
+        ClearForceFieldPreset();
+        if (EnsureFFBDeviceReady() && SetSpringStrength(1.0f))
+            Log("Basic centering force applied.");
+        else
+            Log("Basic centering fallback failed.");
         return false;
     }
 
     if (!std::filesystem::exists(profile.presetPath))
     {
-        Logf("Resolved preset does not exist: %s", profile.presetPath.string().c_str());
+        Logf("Resolved preset does not exist: %s. Falling back to basic centering.", profile.presetPath.string().c_str());
+        ClearForceFieldPreset();
+        if (EnsureFFBDeviceReady() && SetSpringStrength(1.0f))
+            Log("Basic centering force applied.");
+        else
+            Log("Basic centering fallback failed.");
         return false;
     }
 

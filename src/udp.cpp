@@ -267,7 +267,14 @@ void NetworkThread()
             }
         }
         if (connectionLost)
+        {
             Log("BeamNG Lua connection is LOST.");
+            // No live vehicle context remains trustworthy after the Lua
+            // heartbeat disappears. Remove the vehicle-selected preset and
+            // leave the device limp until Lua reconnects and re-identifies the
+            // current vehicle.
+            ClearForceFieldPreset();
+        }
 
         bool timedOut = false;
         bool persistent = false;
