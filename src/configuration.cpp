@@ -370,12 +370,41 @@ bool ResolveVehicleProfile(const VehicleProfileRequest& request,
 
 bool LoadResolvedVehicleProfile(const VehicleProfileRequest& request)
 {
+    // When no explicit Configuration.txt profile exists, an automatic/DCT/CVT
+    // layout is itself a valid profile name (for example PRND1 -> PRND1.fff).
+    // Keep this fallback independent of Configuration.txt so an empty file does
+    // not disable the built-in layout presets.
+    const auto tryLayoutFallback = [&]() -> bool
+    {
+        if (request.gearLayout.empty())
+            return false;
+
+        const auto presetPath = GetApplicationDirectory() / "forcefields" /
+            (request.gearLayout + ".fff");
+        if (!std::filesystem::exists(presetPath))
+            return false;
+
+        Logf("Using automatic gear-layout fallback: %s", request.gearLayout.c_str());
+        ClearForceFieldPreset();
+        if (!LoadForceFieldPreset(presetPath))
+            return false;
+        Logf("Fallback forcefield profile: %s", presetPath.string().c_str());
+        StartPresetTest();
+        return true;
+    };
+
     if (!LoadConfigurationFile())
+    {
+        if (tryLayoutFallback())
+            return true;
         return false;
+    }
 
     ResolvedProfile profile;
     if (!ResolveVehicleProfile(request, profile))
     {
+        if (tryLayoutFallback())
+            return true;
         Logf("No configured FFB profile for game=\"%s\" type=\"%s\" vehicle=\"%s\" configuration=\"%s\" transmission=\"%s\"; using basic centering.",
              request.game.c_str(), request.vehicleType.c_str(), request.vehicle.c_str(),
              request.configuration.c_str(), request.transmission.c_str());

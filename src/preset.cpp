@@ -350,7 +350,7 @@ int GetRequestedGearIndex(const ForceField& field, const VehicleState& state)
                 (token == "L" && (name == "LOW" || name == "L")) ||
                 (numericField >= 0 && mode >= '0' && mode <= '9' &&
                  numericField == static_cast<int>(mode - '0')))
-                return static_cast<int>(i);
+                return static_cast<int>(i) + 1;
         }
     }
 
@@ -455,7 +455,7 @@ void ApplyVehicleStateImpl(const VehicleState& state)
     {
         SetSpringForceField(selected);
     }
-    else if (selected.forceType == 2)
+    else if (selected.forceType == 0 || selected.forceType == 2)
     {
         SetConstantForceField(selected);
     }
@@ -648,7 +648,7 @@ void UpdatePresetTest()
 
     if (selected.forceType == 1)
         SetSpringForceField(selected);
-    else if (selected.forceType == 2)
+    else if (selected.forceType == 0 || selected.forceType == 2)
         SetConstantForceField(selected);
     else
         StopSpring();
