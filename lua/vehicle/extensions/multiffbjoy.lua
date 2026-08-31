@@ -12,13 +12,15 @@ local function safeValue(object, key)
   return ok and value or nil
 end
 
-local function safeCall(object, methodName)
+-- BeamNG public controller APIs are exposed as functions on the controller
+-- table; they are not colon-style methods. Calling method(object, ...) passes
+-- the controller table as an extra first argument and breaks functions such
+-- as manualGearbox.shiftToGearIndex(), which expects a numeric index.
+local function safeCall(object, methodName, ...)
   if object == nil then return nil end
-  local ok, result = pcall(function()
-    local method = object[methodName]
-    if type(method) ~= "function" then return nil end
-    return method(object)
-  end)
+  local method = safeValue(object, methodName)
+  if type(method) ~= "function" then return nil end
+  local ok, result = pcall(method, ...)
   return ok and result or nil
 end
 
@@ -61,27 +63,43 @@ end
 
 local function getPartConfig()
   return stringify(firstNonEmpty(
-    safeValue(v, "partConfigFilename"), safeValue(v, "partConfig"),
-    safeValue(v and v.data, "partConfigFilename"), safeValue(v and v.data, "partConfig")
+    safeValue(v, "partConfigFilename"),
+    safeValue(v, "partConfig"),
+    safeValue(v and v.data, "partConfigFilename"),
+    safeValue(v and v.data, "partConfig")
   ))
 end
 
 local function getIdentity(partConfig)
   local parsedVehicle, parsedConfiguration = parsePartConfig(partConfig)
   local vehicleCode = firstNonEmpty(
-    safeValue(v, "JBeam"), safeValue(v, "jBeam"), safeCall(v, "getJBeamFilename"),
-    safeValue(v and v.data, "JBeam"), safeValue(v and v.data, "jBeam"), parsedVehicle)
+    safeValue(v, "JBeam"),
+    safeValue(v, "jBeam"),
+    safeCall(v, "getJBeamFilename"),
+    safeValue(v and v.data, "JBeam"),
+    safeValue(v and v.data, "jBeam"),
+    parsedVehicle
+  )
   local configurationCode = firstNonEmpty(
-    safeValue(v, "configuration"), safeValue(v, "configurationName"), safeValue(v, "configName"),
-    safeValue(v and v.data, "configuration"), safeValue(v and v.data, "configurationName"), parsedConfiguration)
+    safeValue(v, "configuration"),
+    safeValue(v, "configurationName"),
+    safeValue(v, "configName"),
+    safeValue(v and v.data, "configuration"),
+    safeValue(v and v.data, "configurationName"),
+    parsedConfiguration
+  )
   return stringify(vehicleCode), stringify(configurationCode), parsedVehicle
 end
 
 local function getVehicleType()
   local candidates = {
-    safeValue(v and v.data, "vehicleType"), safeValue(v and v.data, "VehicleType"),
-    safeValue(v and v.data, "Type"), safeValue(v and v.data, "type"),
-    safeValue(v and v.data, "category"), safeValue(v, "vehicleType"), safeValue(v, "type")
+    safeValue(v and v.data, "vehicleType"),
+    safeValue(v and v.data, "VehicleType"),
+    safeValue(v and v.data, "Type"),
+    safeValue(v and v.data, "type"),
+    safeValue(v and v.data, "category"),
+    safeValue(v, "vehicleType"),
+    safeValue(v, "type")
   }
   for _, value in ipairs(candidates) do
     if value ~= nil and tostring(value) ~= "" then return tostring(value) end
@@ -95,30 +113,42 @@ local function getTransmission()
     local ok, result = pcall(function() return powertrain.getDevice("gearbox") end)
     if ok then gearbox = result end
   end
-  local rawType = firstNonEmpty(safeValue(gearbox, "type"), safeValue(gearbox, "deviceType"), safeValue(gearbox, "gearboxType"))
+
+  local rawType = firstNonEmpty(
+    safeValue(gearbox, "type"),
+    safeValue(gearbox, "deviceType"),
+    safeValue(gearbox, "gearboxType")
+  )
   local lower = rawType and string.lower(tostring(rawType)) or ""
   local display = rawType
+
   if lower == "automaticgearbox" then display = "Automatic"
   elseif lower == "manualgearbox" then display = "Manual"
   elseif lower == "sequentialgearbox" then display = "Sequential"
   elseif lower == "dctgearbox" then display = "DCT"
   elseif lower == "cvtgearbox" then display = "CVT"
   elseif lower == "electricmotor" then display = "Electric" end
+
   return stringify(display), stringify(rawType), gearbox
+end
+
+local function getMainController()
+  if controller == nil then return nil end
+
+  local main = safeValue(controller, "mainController")
+  if main ~= nil then return main end
+
+  if type(controller.getController) == "function" then
+    local ok, result = pcall(controller.getController, "main")
+    if ok then return result end
+  end
+
+  return nil
 end
 
 local function getGearState(gearbox)
   local values = electrics and electrics.values or nil
-  local mainController = nil
-
-  -- BeamNG's documented gear API belongs to the active vehicle-controller /
-  -- shift-logic controller, not to the powertrain gearbox device itself.
-  -- In particular, vehicleController exposes getGearName(), getGearPosition()
-  -- and currentGearIndex.  The electrics values are also authoritative and
-  -- are useful as a fallback.
-  if controller ~= nil then
-    mainController = safeValue(controller, "mainController")
-  end
+  local mainController = getMainController()
 
   local gear = firstNonEmpty(
     safeCall(mainController, "getGearName"),
@@ -159,10 +189,8 @@ local function getGearState(gearbox)
     safeValue(gearbox, "currentGearPosition")
   )
 
-  -- During the first frame after spawn, getGearName() can be empty even
-  -- though the automatic shift logic already knows its startup mode.
-  if (gear == nil or tostring(gear) == "") and gearboxMode ~= nil and tostring(gearboxMode) ~= "" then
-    local mode = tostring(gearboxMode)
+  if (gear == nil or tostring(gear) == "") and gearboxMode ~= nil then
+    local mode = string.lower(tostring(gearboxMode))
     if mode == "park" then gear = "P"
     elseif mode == "reverse" then gear = "R"
     elseif mode == "neutral" then gear = "N"
@@ -175,7 +203,7 @@ end
 
 local function getAutomaticModes(gearbox)
   local values = electrics and electrics.values or nil
-  local mainController = controller and safeValue(controller, "mainController") or nil
+  local mainController = getMainController()
   local controllerConfig = firstNonEmpty(
     safeValue(jbeamData, "vehicleController"),
     safeValue(v and v.data, "vehicleController")
@@ -216,11 +244,15 @@ end
 
 local function getGearLayout(gearbox, automaticModes)
   local candidates = {
-    safeValue(gearbox, "gearLayout"), safeValue(gearbox, "shiftPattern"),
-    safeValue(gearbox, "shiftLayout"), safeValue(gearbox, "gearPattern"),
-    safeValue(gearbox, "gearPositions"), safeValue(gearbox, "positions"),
+    safeValue(gearbox, "gearLayout"),
+    safeValue(gearbox, "shiftPattern"),
+    safeValue(gearbox, "shiftLayout"),
+    safeValue(gearbox, "gearPattern"),
+    safeValue(gearbox, "gearPositions"),
+    safeValue(gearbox, "positions"),
     safeValue(gearbox, "shifterPositions")
   }
+
   for _, value in ipairs(candidates) do
     if type(value) == "string" and value ~= "" then return value end
     if type(value) == "table" then
@@ -228,7 +260,7 @@ local function getGearLayout(gearbox, automaticModes)
       if text ~= "" then return text end
     end
   end
-  -- automaticModes is useful fallback metadata: PRND21/PRNDS21M etc.
+
   return automaticModes or ""
 end
 
@@ -237,18 +269,28 @@ local function queueToGE(payload)
     print("[MultiFFBJoy/VLUA] queueGameEngineLua unavailable.")
     return false
   end
+
+  local functionName = payload._geFunction
+  payload._geFunction = nil
+
   local ok, encoded = pcall(function() return jsonEncode(payload) end)
   if not ok or encoded == nil then
     print("[MultiFFBJoy/VLUA] jsonEncode failed: " .. tostring(encoded))
     return false
   end
-  local command = "multiffbjoy." .. payload._geFunction .. "(jsonDecode(" .. string.format("%q", encoded) .. "))"
-  payload._geFunction = nil
-  local queueOK, queueError = pcall(function() obj:queueGameEngineLua(command) end)
+
+  local command = "multiffbjoy." .. tostring(functionName)
+    .. "(jsonDecode(" .. string.format("%q", encoded) .. "))"
+
+  local queueOK, queueError = pcall(function()
+    obj:queueGameEngineLua(command)
+  end)
+
   if not queueOK then
     print("[MultiFFBJoy/VLUA] queueGameEngineLua failed: " .. tostring(queueError))
     return false
   end
+
   return true
 end
 
@@ -260,13 +302,15 @@ local function buildMetadata()
   local automaticModes = getAutomaticModes(gearbox)
   local defaultAutomaticMode = getDefaultAutomaticMode()
   local values = electrics and electrics.values or nil
+  local mainController = getMainController()
+
   local gearboxGearName = stringify(safeCall(gearbox, "getGearName"))
   local gearboxGearPosition = stringify(safeCall(gearbox, "getGearPosition"))
   local gearboxCurrentGearIndex = stringify(safeValue(gearbox, "currentGearIndex"))
-  local mainController = controller and safeValue(controller, "mainController") or nil
   local controllerGearName = stringify(safeCall(mainController, "getGearName"))
   local controllerGearPosition = stringify(safeCall(mainController, "getGearPosition"))
   local controllerGearIndex = stringify(safeValue(mainController, "currentGearIndex"))
+
   local electricsGear = stringify(safeValue(values, "gear"))
   local electricsGearIndex = stringify(safeValue(values, "gearIndex"))
   local electricsGearA = stringify(safeValue(values, "gear_A"))
@@ -276,7 +320,12 @@ local function buildMetadata()
     vehicle = vehicleCode,
     configuration = configurationCode,
     partConfig = partConfig,
-    jBeam = stringify(firstNonEmpty(safeValue(v, "JBeam"), safeValue(v, "jBeam"), safeCall(v, "getJBeamFilename"), parsedVehicle)),
+    jBeam = stringify(firstNonEmpty(
+      safeValue(v, "JBeam"),
+      safeValue(v, "jBeam"),
+      safeCall(v, "getJBeamFilename"),
+      parsedVehicle
+    )),
     vehicleType = getVehicleType(),
     transmission = transmission,
     transmissionRaw = transmissionRaw,
@@ -288,7 +337,8 @@ local function buildMetadata()
     defaultAutomaticMode = defaultAutomaticMode,
     gearLayout = getGearLayout(gearbox, automaticModes),
     gearboxFields = shallowStringifyTable(gearbox, 48),
-    gearDiagnostics = "electrics.gear=" .. electricsGear
+    gearDiagnostics =
+      "electrics.gear=" .. electricsGear
       .. "; electrics.gearIndex=" .. electricsGearIndex
       .. "; electrics.gear_A=" .. electricsGearA
       .. "; gearbox.getGearName=" .. gearboxGearName
@@ -304,6 +354,7 @@ end
 
 local function sendMetadataAndPrimeState()
   local metadata = buildMetadata()
+
   print("[MultiFFBJoy/VLUA] Metadata: vehicle=" .. metadata.vehicle
     .. " config=" .. metadata.configuration
     .. " type=" .. metadata.vehicleType
@@ -314,6 +365,7 @@ local function sendMetadataAndPrimeState()
     .. " gearPosition=" .. metadata.gearPosition
     .. " layout=" .. metadata.gearLayout
     .. " [" .. metadata.gearDiagnostics .. "]")
+
   metadata._geFunction = "receiveVehicleMetadata"
   metadataSent = queueToGE(metadata)
   lastStateSignature = nil
@@ -323,28 +375,181 @@ function M.sendMetadata()
   sendMetadataAndPrimeState()
 end
 
-local function queueGearVerification(expectedIndex, expectedName, ok, err)
+local function queueGearVerification(expectedIndex, expectedName, callSucceeded, err, attempt)
   local metadata = buildMetadata()
   local payload = {
     vehicleId = metadata.vehicleId,
     expectedIndex = expectedIndex,
     expectedName = expectedName or "",
-    shiftCallSucceeded = ok == true,
+    shiftCallSucceeded = callSucceeded == true,
     shiftError = stringify(err),
+    attempt = attempt or 0,
     gear = metadata.gear,
     gearIndex = metadata.gearIndex,
     gearPosition = metadata.gearPosition,
     controllerGear = "",
     controllerIndex = "",
     controllerPosition = "",
+    gearboxMode = metadata.gearboxMode,
+    transmission = metadata.transmission,
+    gearDiagnostics = metadata.gearDiagnostics,
   }
 
-  local mainController = controller and safeValue(controller, "mainController") or nil
+  local mainController = getMainController()
   payload.controllerGear = stringify(safeCall(mainController, "getGearName"))
   payload.controllerIndex = stringify(safeValue(mainController, "currentGearIndex"))
   payload.controllerPosition = stringify(safeCall(mainController, "getGearPosition"))
+
   payload._geFunction = "receiveGearVerification"
   queueToGE(payload)
+end
+
+local function normalizeGearName(name)
+  if name == nil then return "" end
+  local s = string.lower(tostring(name))
+  s = s:gsub("^s", "")
+  return s
+end
+
+local function expectedAutomaticName(expectedName)
+  local s = normalizeGearName(expectedName)
+  if s == "park" or s == "p" then return "p" end
+  if s == "reverse" or s == "r" then return "r" end
+  if s == "neutral" or s == "n" then return "n" end
+  if s == "drive" or s == "d" then return "d" end
+  if s == "sport" or s == "s" then return "s" end
+  if s == "low" or s == "l" or s == "1st" or s == "first" or s == "1" then return "1" end
+  return s
+end
+
+local function automaticModeList(automaticModes)
+  local modes = {}
+  local text = tostring(automaticModes or "")
+  for i = 1, #text do
+    local mode = string.lower(text:sub(i, i))
+    if mode ~= "" then modes[#modes + 1] = mode end
+  end
+  return modes
+end
+
+local function automaticModePosition(automaticModes, mode)
+  local target = expectedAutomaticName(mode)
+  local modes = automaticModeList(automaticModes)
+  for i, value in ipairs(modes) do
+    if value == target then return i, #modes end
+  end
+  return nil, #modes
+end
+
+local function getAutomaticCurrentMode(metadata)
+  local gear = expectedAutomaticName(metadata and metadata.gear or "")
+  if gear ~= "" then return gear end
+  return expectedAutomaticName(metadata and metadata.gearboxMode or "")
+end
+
+local function shiftStateMatches(pending)
+  local metadata = buildMetadata()
+  local actualGear = normalizeGearName(metadata.gear)
+  local actualIndex = tonumber(metadata.gearIndex)
+  local expectedIndex = pending.expectedIndex
+  local expectedName = normalizeGearName(pending.expectedName)
+
+  if metadata.transmission == "Automatic"
+    or metadata.transmission == "DCT"
+    or metadata.transmission == "CVT" then
+    local expected = expectedAutomaticName(expectedName)
+    if expected ~= "" and actualGear == expected then
+      return true, metadata
+    end
+
+    -- Some automatic controllers report the current shifter index through
+    -- the controller's currentGearIndex. Do not use electrics.gearIndex as
+    -- the shifter-position index because BeamNG documents that gearIndex is
+    -- the selected transmission gear, while gear_A is the automatic shifter
+    -- position.
+    local controllerIndex = tonumber(metadata.controllerIndex or "")
+    if controllerIndex ~= nil and controllerIndex == expectedIndex then
+      return true, metadata
+    end
+
+    return false, metadata
+  end
+
+  -- Manual/sequential: gearIndex is the authoritative selected gear index.
+  if actualIndex ~= nil and actualIndex == expectedIndex then
+    return true, metadata
+  end
+
+  return false, metadata
+end
+
+local function queueAutomaticStep(pending)
+  local metadata = buildMetadata()
+  local current = getAutomaticCurrentMode(metadata)
+  local target = pending.automaticTarget
+  local automaticModes = metadata.automaticModes or ""
+  local currentPos = automaticModePosition(automaticModes, current)
+  local targetPos = automaticModePosition(automaticModes, target)
+
+  if current == target then
+    print("[MultiFFBJoy/VLUA] AUTO SHIFT already at target=" .. tostring(pending.expectedName))
+    return true
+  end
+
+  -- Do not issue another shift while the previous selector movement is still
+  -- being applied. Repeating shiftDown/shiftUp before the authoritative mode
+  -- changes can skip positions or trip the gearbox's shift-delay protection.
+  if pending.lastAutomaticMode ~= nil and current == pending.lastAutomaticMode then
+    return true
+  end
+
+  if currentPos == nil or targetPos == nil then
+    local err = "automatic mode not present in automaticModes=" .. tostring(automaticModes)
+    print("[MultiFFBJoy/VLUA] AUTO SHIFT failed: " .. err
+      .. " current=" .. tostring(current) .. " target=" .. tostring(target))
+    pending.callSucceeded = false
+    pending.error = err
+    return false
+  end
+
+  local mainController = getMainController()
+  if mainController == nil then
+    local err = "main vehicle controller unavailable"
+    print("[MultiFFBJoy/VLUA] AUTO SHIFT failed: " .. err)
+    pending.callSucceeded = false
+    pending.error = err
+    return false
+  end
+
+  local function callShift(methodName)
+    local fn = safeValue(mainController, methodName)
+    if type(fn) ~= "function" then return false, methodName .. "() unavailable" end
+    return pcall(fn)
+  end
+
+  local methodName
+  if targetPos > currentPos then
+    methodName = "shiftUp"
+  else
+    methodName = "shiftDown"
+  end
+
+  local ok, err = callShift(methodName)
+  pending.callSucceeded = ok
+  pending.error = err
+  pending.elapsed = 0
+  pending.attempts = (pending.attempts or 0) + 1
+  if ok then pending.lastAutomaticMode = current end
+
+  if ok then
+    print("[MultiFFBJoy/VLUA] AUTO SHIFT step=" .. methodName
+      .. " current=" .. tostring(current)
+      .. " target=" .. tostring(target)
+      .. " position=" .. tostring(currentPos) .. "->" .. tostring(targetPos))
+  else
+    print("[MultiFFBJoy/VLUA] AUTO SHIFT step failed: " .. tostring(err))
+  end
+  return ok
 end
 
 function M.shiftToGearIndex(index, expectedName)
@@ -353,47 +558,122 @@ function M.shiftToGearIndex(index, expectedName)
     print("[MultiFFBJoy/VLUA] SHIFT rejected: invalid index " .. tostring(index))
     return false
   end
+
   idx = math.floor(idx)
 
-  local mainController = controller and safeValue(controller, "mainController") or nil
-  if mainController == nil and controller and controller.getController then
-    local ok, result = pcall(function() return controller.getController("main") end)
-    if ok then mainController = result end
+  -- IMPORTANT: automatic gearbox gearIndex is NOT the selector-position
+  -- index. BeamNG exposes gearIndex as the actual transmission gear (for
+  -- example D currently reports 1), while the selector positions are exposed
+  -- through getGearName()/getGearPosition() and are moved with shiftUp/
+  -- shiftDown. Passing PRND1's 0..4 selector offsets to the generic
+  -- vehicleController.shiftToGearIndex() therefore selects transmission
+  -- gears/modes instead of the requested selector position.
+  --
+  -- For automatic/DCT/CVT transmissions, walk the selector one documented
+  -- position at a time and verify the authoritative gear name after each
+  -- step. Manual/sequential transmissions continue to use shiftToGearIndex().
+  local transmission = select(1, getTransmission())
+  if transmission == "Automatic" or transmission == "DCT" or transmission == "CVT" then
+    local target = expectedAutomaticName(expectedName)
+    local metadata = buildMetadata()
+    local targetPos = automaticModePosition(metadata.automaticModes, target)
+    if targetPos == nil then
+      local err = "target mode '" .. tostring(target) .. "' not found in automaticModes='"
+        .. tostring(metadata.automaticModes) .. "'"
+      print("[MultiFFBJoy/VLUA] AUTO SHIFT rejected: " .. err)
+      queueGearVerification(idx, expectedName, false, err, 0)
+      return false
+    end
+
+    pendingShift = {
+      automatic = true,
+      automaticTarget = target,
+      expectedIndex = idx,
+      expectedName = tostring(expectedName or ""),
+      elapsed = 0,
+      age = 0,
+      callSucceeded = true,
+      error = nil,
+      attempts = 0,
+      lastAutomaticMode = nil,
+    }
+
+    print("[MultiFFBJoy/VLUA] AUTO SHIFT requested mode=" .. tostring(expectedName)
+      .. " target=" .. tostring(target)
+      .. " selectorIndex=" .. tostring(idx)
+      .. " automaticModes=" .. tostring(metadata.automaticModes))
+
+    queueAutomaticStep(pendingShift)
+    return pendingShift ~= nil and pendingShift.callSucceeded
   end
 
-  if mainController == nil or type(safeValue(mainController, "shiftToGearIndex")) ~= "function" then
-    print("[MultiFFBJoy/VLUA] SHIFT failed: main vehicle controller has no shiftToGearIndex()")
-    queueGearVerification(idx, expectedName, false, "main controller unavailable")
+  local mainController = getMainController()
+  local shiftFunction = mainController and safeValue(mainController, "shiftToGearIndex") or nil
+
+  if mainController == nil or type(shiftFunction) ~= "function" then
+    local errorText = "main vehicle controller has no shiftToGearIndex()"
+    print("[MultiFFBJoy/VLUA] SHIFT failed: " .. errorText)
+    queueGearVerification(idx, expectedName, false, errorText, 0)
     return false
   end
 
-  local ok, err = pcall(function()
-    mainController:shiftToGearIndex(idx)
-  end)
+  -- IMPORTANT: call the public BeamNG controller function with DOT syntax.
+  -- The function is defined as shiftToGearIndex(index), not as a colon
+  -- method. Calling mainController:shiftToGearIndex(idx) passes the whole
+  -- controller table as argument #1 and causes manualGearbox.lua to throw:
+  -- "bad argument #1 to 'max' (number expected, got table)".
+  local ok, err = pcall(shiftFunction, idx)
 
   if not ok then
-    print("[MultiFFBJoy/VLUA] SHIFT call failed index=" .. tostring(idx) .. ": " .. tostring(err))
+    print("[MultiFFBJoy/VLUA] SHIFT call failed index=" .. tostring(idx)
+      .. ": " .. tostring(err))
   else
-    print("[MultiFFBJoy/VLUA] SHIFT requested index=" .. tostring(idx) .. " expected=" .. tostring(expectedName or ""))
+    print("[MultiFFBJoy/VLUA] SHIFT requested index=" .. tostring(idx)
+      .. " expected=" .. tostring(expectedName or ""))
   end
 
   pendingShift = {
     expectedIndex = idx,
     expectedName = tostring(expectedName or ""),
     elapsed = 0,
+    age = 0,
     callSucceeded = ok,
     error = err,
+    attempts = 0,
   }
 
-  -- A gearbox can intentionally delay the actual gear change (especially
-  -- automatic transmissions and neutral transitions).  Verification is
-  -- therefore performed from subsequent vehicle-update ticks, using the
-  -- authoritative controller/electrics state rather than the requested index.
-  if not ok then
-    queueGearVerification(idx, expectedName, ok, err)
-    pendingShift = nil
-  end
+  -- Verify on subsequent simulation ticks. A successful Lua call only means
+  -- the request was accepted by the controller; it does NOT mean the vehicle
+  -- has reached the requested gear yet.
   return ok
+end
+
+local function getStateSignature()
+  local metadata = buildMetadata()
+  return table.concat({
+    tostring(metadata.vehicleId),
+    metadata.gear,
+    metadata.gearIndex,
+    metadata.gearPosition,
+    metadata.gearboxMode,
+  }, "|"), metadata
+end
+
+local function sendStateIfChanged()
+  local metadata = buildMetadata()
+  local signature = table.concat({
+    tostring(metadata.vehicleId),
+    metadata.gear,
+    metadata.gearIndex,
+    metadata.gearboxMode,
+    metadata.gearPosition,
+  }, "|")
+
+  if signature == lastStateSignature then return end
+  lastStateSignature = signature
+
+  metadata._geFunction = "receiveVehicleState"
+  queueToGE(metadata)
 end
 
 function M.onUpdate(dtReal, dtSim, dtRaw)
@@ -402,26 +682,83 @@ function M.onUpdate(dtReal, dtSim, dtRaw)
 
   if pendingShift ~= nil then
     pendingShift.elapsed = pendingShift.elapsed + dt
-    if pendingShift.elapsed >= 0.05 then
-      pendingShift.elapsed = 0
-      local metadata = buildMetadata()
-      local actualIndex = tonumber(metadata.gearIndex)
-      local mainController = controller and safeValue(controller, "mainController") or nil
-      local controllerIndex = tonumber(safeValue(mainController, "currentGearIndex"))
-      local expected = pendingShift.expectedIndex
+    pendingShift.age = pendingShift.age + dt
 
-      if actualIndex == expected or controllerIndex == expected then
-        queueGearVerification(expected, pendingShift.expectedName, pendingShift.callSucceeded, pendingShift.error)
+    if pendingShift.automatic then
+      if pendingShift.elapsed >= 0.10 then
+        pendingShift.elapsed = 0
+        local confirmed, metadata = shiftStateMatches(pendingShift)
+        if confirmed then
+          print("[MultiFFBJoy/VLUA] AUTO SHIFT CONFIRMED: expected="
+            .. tostring(pendingShift.expectedName)
+            .. " actualGear=" .. tostring(metadata.gear)
+            .. " gearPosition=" .. tostring(metadata.gearPosition))
+          queueGearVerification(
+            pendingShift.expectedIndex,
+            pendingShift.expectedName,
+            pendingShift.callSucceeded,
+            pendingShift.error,
+            pendingShift.attempts
+          )
+          pendingShift = nil
+        elseif pendingShift.age >= 1.5 then
+          print("[MultiFFBJoy/VLUA] AUTO SHIFT NOT CONFIRMED: expected="
+            .. tostring(pendingShift.expectedName)
+            .. " actualGear=" .. tostring(metadata.gear)
+            .. " gearPosition=" .. tostring(metadata.gearPosition))
+          queueGearVerification(
+            pendingShift.expectedIndex,
+            pendingShift.expectedName,
+            pendingShift.callSucceeded,
+            pendingShift.error,
+            pendingShift.attempts
+          )
+          pendingShift = nil
+        else
+          queueAutomaticStep(pendingShift)
+        end
+      end
+    elseif pendingShift.elapsed >= 0.05 then
+      pendingShift.elapsed = 0
+      pendingShift.attempts = pendingShift.attempts + 1
+
+      local confirmed, metadata = shiftStateMatches(pendingShift)
+      if confirmed then
+        print("[MultiFFBJoy/VLUA] SHIFT CONFIRMED: expected="
+          .. tostring(pendingShift.expectedName)
+          .. " index=" .. tostring(pendingShift.expectedIndex)
+          .. " actualGear=" .. tostring(metadata.gear)
+          .. " actualGearIndex=" .. tostring(metadata.gearIndex)
+          .. " controllerIndex=" .. tostring(metadata.controllerIndex or "")
+          .. " gearPosition=" .. tostring(metadata.gearPosition))
+
+        queueGearVerification(
+          pendingShift.expectedIndex,
+          pendingShift.expectedName,
+          pendingShift.callSucceeded,
+          pendingShift.error,
+          pendingShift.attempts
+        )
+        pendingShift = nil
+      elseif pendingShift.age >= 1.5 then
+        print("[MultiFFBJoy/VLUA] SHIFT NOT CONFIRMED: requested shift did not"
+          .. " reach the authoritative vehicle state."
+          .. " expected=" .. tostring(pendingShift.expectedName)
+          .. " index=" .. tostring(pendingShift.expectedIndex)
+          .. " actualGear=" .. tostring(metadata.gear)
+          .. " actualGearIndex=" .. tostring(metadata.gearIndex)
+          .. " controllerIndex=" .. tostring(metadata.controllerIndex or "")
+          .. " gearPosition=" .. tostring(metadata.gearPosition))
+
+        queueGearVerification(
+          pendingShift.expectedIndex,
+          pendingShift.expectedName,
+          pendingShift.callSucceeded,
+          pendingShift.error,
+          pendingShift.attempts
+        )
         pendingShift = nil
       end
-    end
-
-    -- Use a separate age accumulator so a permanently refused shift cannot
-    -- leave the verification pending forever.
-    pendingShift.age = (pendingShift.age or 0) + dt
-    if pendingShift ~= nil and pendingShift.age >= 1.5 then
-      queueGearVerification(pendingShift.expectedIndex, pendingShift.expectedName, pendingShift.callSucceeded, pendingShift.error)
-      pendingShift = nil
     end
   end
 
@@ -434,11 +771,13 @@ function M.onExtensionLoaded()
   stateTimer = 0
   lastStateSignature = nil
   metadataSent = false
+  pendingShift = nil
 end
 
 function M.onExtensionUnloaded()
   metadataSent = false
   lastStateSignature = nil
+  pendingShift = nil
 end
 
 return M
