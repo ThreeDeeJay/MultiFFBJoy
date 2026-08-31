@@ -417,34 +417,8 @@ local function expectedAutomaticName(expectedName)
   if s == "reverse" or s == "r" then return "r" end
   if s == "neutral" or s == "n" then return "n" end
   if s == "drive" or s == "d" then return "d" end
-  if s == "sport" or s == "s" then return "s" end
-  if s == "low" or s == "l" or s == "1st" or s == "first" or s == "1" then return "1" end
+  if s == "low" or s == "l" then return "l" end
   return s
-end
-
-local function automaticModeList(automaticModes)
-  local modes = {}
-  local text = tostring(automaticModes or "")
-  for i = 1, #text do
-    local mode = string.lower(text:sub(i, i))
-    if mode ~= "" then modes[#modes + 1] = mode end
-  end
-  return modes
-end
-
-local function automaticModePosition(automaticModes, mode)
-  local target = expectedAutomaticName(mode)
-  local modes = automaticModeList(automaticModes)
-  for i, value in ipairs(modes) do
-    if value == target then return i, #modes end
-  end
-  return nil, #modes
-end
-
-local function getAutomaticCurrentMode(metadata)
-  local gear = expectedAutomaticName(metadata and metadata.gear or "")
-  if gear ~= "" then return gear end
-  return expectedAutomaticName(metadata and metadata.gearboxMode or "")
 end
 
 local function shiftStateMatches(pending)
@@ -483,75 +457,6 @@ local function shiftStateMatches(pending)
   return false, metadata
 end
 
-local function queueAutomaticStep(pending)
-  local metadata = buildMetadata()
-  local current = getAutomaticCurrentMode(metadata)
-  local target = pending.automaticTarget
-  local automaticModes = metadata.automaticModes or ""
-  local currentPos = automaticModePosition(automaticModes, current)
-  local targetPos = automaticModePosition(automaticModes, target)
-
-  if current == target then
-    print("[MultiFFBJoy/VLUA] AUTO SHIFT already at target=" .. tostring(pending.expectedName))
-    return true
-  end
-
-  -- Do not issue another shift while the previous selector movement is still
-  -- being applied. Repeating shiftDown/shiftUp before the authoritative mode
-  -- changes can skip positions or trip the gearbox's shift-delay protection.
-  if pending.lastAutomaticMode ~= nil and current == pending.lastAutomaticMode then
-    return true
-  end
-
-  if currentPos == nil or targetPos == nil then
-    local err = "automatic mode not present in automaticModes=" .. tostring(automaticModes)
-    print("[MultiFFBJoy/VLUA] AUTO SHIFT failed: " .. err
-      .. " current=" .. tostring(current) .. " target=" .. tostring(target))
-    pending.callSucceeded = false
-    pending.error = err
-    return false
-  end
-
-  local mainController = getMainController()
-  if mainController == nil then
-    local err = "main vehicle controller unavailable"
-    print("[MultiFFBJoy/VLUA] AUTO SHIFT failed: " .. err)
-    pending.callSucceeded = false
-    pending.error = err
-    return false
-  end
-
-  local function callShift(methodName)
-    local fn = safeValue(mainController, methodName)
-    if type(fn) ~= "function" then return false, methodName .. "() unavailable" end
-    return pcall(fn)
-  end
-
-  local methodName
-  if targetPos > currentPos then
-    methodName = "shiftUp"
-  else
-    methodName = "shiftDown"
-  end
-
-  local ok, err = callShift(methodName)
-  pending.callSucceeded = ok
-  pending.error = err
-  pending.elapsed = 0
-  pending.attempts = (pending.attempts or 0) + 1
-  if ok then pending.lastAutomaticMode = current end
-
-  if ok then
-    print("[MultiFFBJoy/VLUA] AUTO SHIFT step=" .. methodName
-      .. " current=" .. tostring(current)
-      .. " target=" .. tostring(target)
-      .. " position=" .. tostring(currentPos) .. "->" .. tostring(targetPos))
-  else
-    print("[MultiFFBJoy/VLUA] AUTO SHIFT step failed: " .. tostring(err))
-  end
-  return ok
-end
-
 function M.shiftToGearIndex(index, expectedName)
   local idx = tonumber(index)
   if idx == nil then
@@ -560,52 +465,6 @@ function M.shiftToGearIndex(index, expectedName)
   end
 
   idx = math.floor(idx)
-
-  -- IMPORTANT: automatic gearbox gearIndex is NOT the selector-position
-  -- index. BeamNG exposes gearIndex as the actual transmission gear (for
-  -- example D currently reports 1), while the selector positions are exposed
-  -- through getGearName()/getGearPosition() and are moved with shiftUp/
-  -- shiftDown. Passing PRND1's 0..4 selector offsets to the generic
-  -- vehicleController.shiftToGearIndex() therefore selects transmission
-  -- gears/modes instead of the requested selector position.
-  --
-  -- For automatic/DCT/CVT transmissions, walk the selector one documented
-  -- position at a time and verify the authoritative gear name after each
-  -- step. Manual/sequential transmissions continue to use shiftToGearIndex().
-  local transmission = select(1, getTransmission())
-  if transmission == "Automatic" or transmission == "DCT" or transmission == "CVT" then
-    local target = expectedAutomaticName(expectedName)
-    local metadata = buildMetadata()
-    local targetPos = automaticModePosition(metadata.automaticModes, target)
-    if targetPos == nil then
-      local err = "target mode '" .. tostring(target) .. "' not found in automaticModes='"
-        .. tostring(metadata.automaticModes) .. "'"
-      print("[MultiFFBJoy/VLUA] AUTO SHIFT rejected: " .. err)
-      queueGearVerification(idx, expectedName, false, err, 0)
-      return false
-    end
-
-    pendingShift = {
-      automatic = true,
-      automaticTarget = target,
-      expectedIndex = idx,
-      expectedName = tostring(expectedName or ""),
-      elapsed = 0,
-      age = 0,
-      callSucceeded = true,
-      error = nil,
-      attempts = 0,
-      lastAutomaticMode = nil,
-    }
-
-    print("[MultiFFBJoy/VLUA] AUTO SHIFT requested mode=" .. tostring(expectedName)
-      .. " target=" .. tostring(target)
-      .. " selectorIndex=" .. tostring(idx)
-      .. " automaticModes=" .. tostring(metadata.automaticModes))
-
-    queueAutomaticStep(pendingShift)
-    return pendingShift ~= nil and pendingShift.callSucceeded
-  end
 
   local mainController = getMainController()
   local shiftFunction = mainController and safeValue(mainController, "shiftToGearIndex") or nil
@@ -684,41 +543,7 @@ function M.onUpdate(dtReal, dtSim, dtRaw)
     pendingShift.elapsed = pendingShift.elapsed + dt
     pendingShift.age = pendingShift.age + dt
 
-    if pendingShift.automatic then
-      if pendingShift.elapsed >= 0.10 then
-        pendingShift.elapsed = 0
-        local confirmed, metadata = shiftStateMatches(pendingShift)
-        if confirmed then
-          print("[MultiFFBJoy/VLUA] AUTO SHIFT CONFIRMED: expected="
-            .. tostring(pendingShift.expectedName)
-            .. " actualGear=" .. tostring(metadata.gear)
-            .. " gearPosition=" .. tostring(metadata.gearPosition))
-          queueGearVerification(
-            pendingShift.expectedIndex,
-            pendingShift.expectedName,
-            pendingShift.callSucceeded,
-            pendingShift.error,
-            pendingShift.attempts
-          )
-          pendingShift = nil
-        elseif pendingShift.age >= 1.5 then
-          print("[MultiFFBJoy/VLUA] AUTO SHIFT NOT CONFIRMED: expected="
-            .. tostring(pendingShift.expectedName)
-            .. " actualGear=" .. tostring(metadata.gear)
-            .. " gearPosition=" .. tostring(metadata.gearPosition))
-          queueGearVerification(
-            pendingShift.expectedIndex,
-            pendingShift.expectedName,
-            pendingShift.callSucceeded,
-            pendingShift.error,
-            pendingShift.attempts
-          )
-          pendingShift = nil
-        else
-          queueAutomaticStep(pendingShift)
-        end
-      end
-    elseif pendingShift.elapsed >= 0.05 then
+    if pendingShift.elapsed >= 0.05 then
       pendingShift.elapsed = 0
       pendingShift.attempts = pendingShift.attempts + 1
 
